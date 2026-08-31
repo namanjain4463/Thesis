@@ -79,8 +79,11 @@ RUN_MODE = "single"
 #   the cylinder itself and hides the original cube.
 OBJECT_SHAPE    = "cylinder"       # "cylinder" or "cube" (cube = use the scene cube)
 OBJECT_PATH     = "/World/GraspObject"
-OBJECT_DIAMETER = 0.024            # m
-OBJECT_HEIGHT   = 0.040            # m  (tall enough for the fingers to grip the side)
+#   A short WIDE puck (height < diameter) so it does NOT topple/roll when the
+#   conveyor yanks it.  Round -> self-centers in the 3 fingers and (having no
+#   corners) fits the open jaws up to ~36 mm dia.
+OBJECT_DIAMETER = 0.030            # m
+OBJECT_HEIGHT   = 0.022            # m  (aspect < 1 -> stable on the belt)
 OBJECT_MASS     = 0.05             # kg
 CUBE_PATH = OBJECT_PATH if OBJECT_SHAPE == "cylinder" else ORIG_CUBE_PATH
 
@@ -92,7 +95,7 @@ SWEEP_DIAMETERS = [0.018, 0.022, 0.026, 0.030]   # m  cylinder diameter
 SWEEP_FRICTIONS = [0.5, 1.0, 1.5]                # contact friction
 SWEEP_ZOFFSETS  = [-0.005, 0.000, 0.005]         # m  grasp height vs object center
 SWEEP_FORCES    = [20.0, 40.0]                    # N  finger force cap
-SWEEP_OBJ_HEIGHT = 0.045                          # m  cylinder height for the sweep
+SWEEP_OBJ_HEIGHT = 0.028                          # m  cylinder height (kept low so it doesn't tip)
 SWEEP_CSV = CFG_ROOT + "/grasp_sweep_results.csv"
 SWEEP_RISE_OK = 0.015                             # m  rise counted as a success
 
@@ -661,9 +664,9 @@ async def moving_pick_place():
     ee_p0, _ = ee_prim.get_world_pose()
     gc_from_ee = float(np.linalg.norm(c_closed - as64(ee_p0)))
     # Top-down insertion is limited by the finger INNER clearance (from the STL
-    # meshes ~18 mm radius open), NOT the fingertip radius, so a cube's corners
-    # must stay within ~18 mm -> cube <= ~24 mm to fit between the fingers.
-    TOPDOWN_MAX_CUBE = 0.024
+    # meshes ~18 mm radius open).  A CUBE is limited by its corners (~24 mm), but
+    # a ROUND object has no corners, so it fits up to ~2*18 = ~36 mm dia.
+    TOPDOWN_MAX_CUBE = 0.036 if OBJECT_SHAPE == "cylinder" else 0.024
     print("\n[3b] APERTURE CALIBRATION (measured from the live gripper)")
     print("    fingertip radius from grasp-center: closed ~%.0f mm, open ~%.0f mm"
           % (r_closed.mean()*1000, r_open.mean()*1000))
