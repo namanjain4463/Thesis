@@ -179,7 +179,9 @@ HOVER_HEIGHT = 0.060               # EE hovers this far above cube at the interc
 # other side of the cube center.  This makes the grasp height correct for any
 # cube size and any (top-down/tilted) orientation automatically.
 GRASP_CENTER_FROM_EE   = 0.005     # m  ee -> grasp-center (real STL tips ~= pro_arm_ee)
-GRASP_CENTER_ABOVE_CUBE = 0.000    # m  put grasp center this far above cube center
+GRASP_CENTER_ABOVE_CUBE = 0.004    # m  grip slightly ABOVE cube center so the
+                                   #     fingertips keep clear of the belt (no
+                                   #     pressing the gripper into the conveyor)
 FINGERTIP_BELT_CLEAR   = 0.004     # m  keep the fingertips above the belt
 DESCEND_GATE_XY        = 0.010     # don't drop to grasp level until aligned within this
 
@@ -214,18 +216,24 @@ CAP_RELV_TOL = 0.035               # m/s  relative EE-cube speed
 REQUIRED_GOOD_FRAMES = 4
 
 # ---- Closing ----------------------------------------------------------
-SETTLE_OPEN_FRAMES = 12            # hold OPEN around the centered cube before closing
-CLOSE_FRAMES    = 18
-POST_CLOSE_HOLD = 25               # hold the close longer so the grip settles
+SETTLE_OPEN_FRAMES = 10            # hold OPEN around the centered cube before closing
+CLOSE_FRAMES    = 16
+POST_CLOSE_HOLD = 10               # short: lift PROMPTLY so it doesn't press the belt
 
 # ---- Quick lift + success gate ---------------------------------------
-QUICK_LIFT_HEIGHT = 0.080
-QUICK_LIFT_FRAMES = 90             # slower lift so inertia doesn't break the grip
+#   Lift promptly (fewer frames) so the gripper doesn't dwell pressing the
+#   object into the belt, but not so fast it rips the grip.  A firm clamp holds
+#   a brisk lift fine.
+QUICK_LIFT_HEIGHT = 0.090
+QUICK_LIFT_FRAMES = 45             # brisk clean lift off the belt
 CUBE_RISE_GATE    = 0.015
 FINAL_RISE_GATE   = 0.040
 
 # ---- Transfer to pedestal --------------------------------------------
-CARRY_HEIGHT    = 0.230
+#   The transfer is a smooth CARTESIAN glide of the grasp centre (fixed top-down
+#   orientation the whole way) -- NOT a joint-space jump between far-apart IK
+#   solutions, which reconfigured the arm violently and flung the object.
+CARRY_HEIGHT    = 0.200            # object clears the rail; kept well within reach
 PLACE_CLEARANCE = 0.004
 TRANSFER_FRAMES = 150
 PLACE_FRAMES    = 90
@@ -686,9 +694,29 @@ async def moving_pick_place():
     solver = LulaKinematicsSolver(robot_description_path=ROBOT_DESCRIPTION, urdf_path=URDF)
     solver.set_robot_base_pose(base_pos, base_quat)
 
+    # J1-J6 limits: clamp EVERY commanded arm position to the URDF joint limits
+    # so we can never drive a joint past its stop, and count any clamp so the run
+    # report can confirm the limits were respected.
+    try:
+        _lo, _hi = solver.get_cspace_position_limits()
+        q_lo, q_hi = as64(_lo), as64(_hi)
+    except Exception as exc:
+        q_lo, q_hi = np.full(6, -np.pi), np.full(6, np.pi)
+        print("    [WARN] could not read Lula joint limits (%s); using +-180 deg" % exc)
+    print("    J1-J6 limits (deg): lo=%s" % np.round(np.degrees(q_lo), 1))
+    print("                        hi=%s" % np.round(np.degrees(q_hi), 1))
+    lim_hits = [0]
+    def clamp_arm(q):
+        q = as64(q)
+        c = np.clip(q, q_lo, q_hi)
+        if np.any(np.abs(c - q) > 1e-6):
+            lim_hits[0] += 1
+        return c
+
     def command_arm(q):
         robot.apply_action(ArticulationAction(
-            joint_positions=np.asarray(q, dtype=np.float32), joint_indices=ARM_INDICES))
+            joint_positions=np.asarray(clamp_arm(q), dtype=np.float32),
+            joint_indices=ARM_INDICES))
 
     # low-pass filtered arm command: the per-frame IK solution can wobble
     # frame-to-frame (redundant DOF), which shows up as gripper JITTER.  An EMA
@@ -1093,41 +1121,51 @@ async def moving_pick_place():
         return
     print("    grasp CONFIRMED (cube is being carried).")
 
-    # (k) TRANSFER up-and-over (joint-space, solved once), all above rail tops
-    print("\n[10] TRANSFER to pedestal")
-    # keep the carry height reachable (see reach_ceiling_z above) but always
-    # above the place point so the final descent onto the pedestal is downward.
-    carry_z = max(min(cube_z0 + CARRY_HEIGHT, reach_ceiling_z), float(place_pos[2]) + 0.05)
-    print("    carry Z: %.4f  (reach ceiling %.4f, place Z %.4f)"
-          % (carry_z, reach_ceiling_z, float(place_pos[2])))
+    # (k) TRANSFER — a smooth CARTESIAN glide of the grasp centre, holding the
+    #     SAME top-down orientation the whole way.  The old transfer solved three
+    #     far-apart key poses and interpolated in JOINT space; because the lift
+    #     and the over-pedestal poses landed in different IK branches, the arm
+    #     reconfigured violently mid-way (the "random movements") and flung the
+    #     object off.  Gliding the grasp centre with per-frame top-down IK (warm
+    #     started, rate limited, low-pass smoothed) keeps the wrist orientation
+    #     fixed and the joints continuous, so the grip is never shaken loose.
+    print("\n[10] TRANSFER to pedestal (cartesian glide, fixed top-down)")
+    carry_z = min(max(cube_z0 + CARRY_HEIGHT, rail_danger_z + 0.03,
+                      float(place_pos[2]) + 0.10), reach_ceiling_z)
+    print("    carry Z: %.4f  (reach ceiling %.4f, rail top ~%.4f, place Z %.4f)"
+          % (carry_z, reach_ceiling_z, rail_danger_z, float(place_pos[2])))
 
-    # solve_key targets a GRASP-CENTER (cube) position; converts to the EE
-    def solve_key(center, warm, label):
-        pos = ee_for_center(center)
-        q, ok = solve(pos, R_grasp, warm)
-        if not ok:
-            q, ok = solve(pos, None, warm)
-        if not ok:
-            print("    [WARN] IK failed for %s at %s" % (label, np.round(center, 3)))
-            return warm, False
-        return q, True
+    async def glide_center(c0, c1, frames, tag, grip_q7=GRIPPER_CLOSED_Q7):
+        nonlocal q_seed
+        c0 = as64(c0); c1 = as64(c1); held = 0
+        for f in range(frames):
+            a = smoothstep((f + 1) / frames)
+            q_new, ok = solve_track(ee_for_center(c0 + a * (c1 - c0)), q_seed)
+            if ok:
+                q_seed = step_toward(q_seed, q_new)
+            else:
+                held += 1
+            command_arm_smooth(q_seed); command_gripper(grip_q7)
+            await next_frame()
+            collision_check(tag)
+        return held
 
-    cur_center = center_from_ee(as64(ee_prim.get_world_pose()[0]))
-    q_up,   _ = solve_key(np.array([cur_center[0], cur_center[1], carry_z]), q_seed, "lift-high")
-    q_over, _ = solve_key(np.array([place_pos[0], place_pos[1], carry_z]), q_up, "over-pedestal")
-    q_place, _ = solve_key(place_pos, q_over, "place")   # cube center -> place_pos
+    cur_center  = center_from_ee(as64(ee_prim.get_world_pose()[0]))
+    up_center   = np.array([cur_center[0], cur_center[1], carry_z])
+    over_center = np.array([place_pos[0],  place_pos[1],  carry_z])
+    held  = await glide_center(cur_center, up_center,   TRANSFER_FRAMES // 2, "lift")
+    held += await glide_center(up_center,  over_center, TRANSFER_FRAMES,      "carry")
+    held += await glide_center(over_center, place_pos,  PLACE_FRAMES,        "place")
+    if held:
+        print("    (%d transfer frames held on an unreachable top-down point — "
+              "glide stayed smooth; raise carry_z headroom if the place is short)"
+              % held)
 
-    # start the transfer from the ACTUAL last commanded pose (the low-pass state
-    # lags q_seed a touch) so the hand-off from tracking to transfer has no tick
-    q_cmd_now = _q_cmd[0].copy() if _q_cmd[0] is not None else q_seed
-    await interp(command_arm, command_gripper, q_cmd_now, q_up, TRANSFER_FRAMES // 2, GRIPPER_CLOSED_Q7)
-    await interp(command_arm, command_gripper, q_up,   q_over, TRANSFER_FRAMES,      GRIPPER_CLOSED_Q7)
-    await interp(command_arm, command_gripper, q_over, q_place, PLACE_FRAMES,        GRIPPER_CLOSED_Q7)
-
-    # (l) RELEASE + RETREAT
+    # (l) RELEASE + RETREAT — lift straight back up first (don't drag the gripper
+    #     across the placed object), then glide home.
     print("\n[11] RELEASE + RETREAT")
-    for _ in range(25): command_arm(q_place); command_gripper(GRIPPER_OPEN_Q7); await next_frame()
-    await interp(command_arm, command_gripper, q_place, q_over, RETREAT_FRAMES, GRIPPER_OPEN_Q7)
+    for _ in range(20): command_arm(q_seed); command_gripper(GRIPPER_OPEN_Q7); await next_frame()
+    await glide_center(place_pos, over_center, RETREAT_FRAMES, "retreat", GRIPPER_OPEN_Q7)
     q_end = as64(robot.get_joint_positions())[:6]
     await interp(command_arm, command_gripper, q_end, ready_q, READY_MOVE_FRAMES, GRIPPER_OPEN_Q7)
 
@@ -1144,6 +1182,9 @@ async def moving_pick_place():
     print("  quick-lift rise: %.1f mm (clean-pick gate %.0f mm)"
           % (rise*1000, FINAL_RISE_GATE*1000))
     print("  rail collisions: %d" % coll_warns[0])
+    print("  J1-J6 limit clamps: %d %s" % (lim_hits[0],
+          "(all commands within limits)" if lim_hits[0] == 0
+          else "(a command was clamped to a joint stop — IK asked past a limit)"))
     print("\n  OVERALL: %s" %
           ("PICK & PLACE SUCCESS" if (xy_err < 0.03 and z_err < 0.03)
            else "placed, but check pedestal error above"))

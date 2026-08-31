@@ -224,3 +224,37 @@ prints a `reach ceiling` and a `carry Z` line — both comfortably reachable (no
 if the object still hops on close, drop `FINGER_MAX_FORCE` a few N. If `[4]`
 still aborts as unreachable, the lane is genuinely at the arm's limit — move the
 robot a few cm toward the conveyor.
+
+---
+
+## G. The transfer — no random movements, no dropped object
+
+The pick can succeed and the object still get dropped **on the way to the
+pedestal**. Cause: the old transfer solved three far-apart key poses (lift →
+over-pedestal → place) and interpolated between them in **joint space**. The
+lift pose and the over-pedestal pose fell in different IK branches, so the arm
+**reconfigured violently mid-transfer** (the "random movements") and shook the
+grip loose — the object landed back near the pick zone, not the pedestal.
+
+Fix: the transfer is now a **Cartesian glide** — it moves the grasp centre
+smoothly along up → over → down while holding the **same top-down orientation**
+the entire way, solving IK per frame (warm-started, rate-limited, low-pass
+smoothed). The wrist never reorients and the joints stay continuous, so the
+grip is never shaken loose. `carry_z` is kept just above the rail and well
+inside reach; the retreat lifts straight up (empty) before gliding home.
+
+Other guards added in the same pass:
+- **J1–J6 limits enforced.** Every commanded arm position is clamped to the
+  URDF joint limits (read live from Lula and printed in `[2]`); the run report
+  ends with `J1-J6 limit clamps: N` — `0` means every command was within limits.
+- **Prompter, cleaner lift.** `QUICK_LIFT_FRAMES` 90 → 45 and `POST_CLOSE_HOLD`
+  25 → 10 so the gripper doesn't dwell pressing the object into the belt, and
+  the grasp sits `GRASP_CENTER_ABOVE_CUBE = 4 mm` higher so the fingertips keep
+  clear of the belt surface.
+- **Collision monitor now covers the transfer too** (wrist low in the near-rail
+  Y band) and reports the count in the result.
+
+If the object still slips during the (now gentle) transfer, the grip itself is
+marginal — the tell is an asymmetric `gripper after close` (e.g.
+`[1.4, -0.5, 1.8]` instead of `[q, -q, -q]`). Then raise `FINGER_MAX_FORCE`
+a few N or use a slightly larger object so the fingers engage deeper.
