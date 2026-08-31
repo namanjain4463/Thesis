@@ -88,7 +88,19 @@ FINGER_MAX_FORCE       = 20.0      # N  (grip force cap; raise if it slips)
 # ---- Heights (m) ------------------------------------------------------
 READY_HEIGHT = 0.220               # EE above cube at READY
 HOVER_HEIGHT = 0.060               # EE hovers this far above cube at the intercept
-GRASP_Z_BIAS = -0.008              # final TCP Z offset at grasp (tune +/- few mm)
+
+# GRASP_Z_BIAS is POSITIVE: the pro_arm_ee frame sits ~25 mm ABOVE the
+# open fingertips at this tool tilt (measured live: with a -8 mm bias the
+# EE bottomed out at ez=+22..24 mm — the fingertips were resting on the
+# belt).  +0.017 puts the finger pads on the cube with the tips ~2 mm
+# clear of the belt.  Tune in the +0.012..+0.020 range:
+#   cube slips out below the fingers -> lower it a little
+#   fingertips drag on the belt      -> raise it a little
+GRASP_Z_BIAS = +0.017
+TIP_DROP           = 0.025         # fingertips this far below EE (measured)
+TIP_BELT_CLEARANCE = 0.002         # never command tips closer to belt than this
+DESCEND_GATE_XY    = 0.008         # don't drop fingers to cube-top level until
+                                   # laterally aligned within this
 
 # ---- Intercept / capture ---------------------------------------------
 #   The arm hovers over the lane at the robot's own X (best reach) and
@@ -312,6 +324,17 @@ async def moving_pick_place():
     print("    base :", np.round(base_pos, 4))
     print("    cube :", np.round(cube_start, 4), " dims(mm):", np.round(cube_dims*1000, 1))
 
+    # hard floor: never command the EE so low that the fingertips would
+    # be pushed into the belt (that is what blocked the last run at
+    # ez=+22mm and punted the cube downstream)
+    belt_top_z = cube_z0 - float(cube_dims[2]) / 2.0     # cube rests on belt
+    ee_floor_z = belt_top_z + TIP_DROP + TIP_BELT_CLEARANCE
+    safe_hz    = float(cube_dims[2]) / 2.0 + TIP_DROP + 0.002   # tips clear cube top
+    print("    belt top Z: %.4f  EE floor Z: %.4f  (tip drop %.0f mm)"
+          % (belt_top_z, ee_floor_z, TIP_DROP*1000))
+    print("    grasp EE Z: %.4f  (cube center %+0.0f mm)"
+          % (cube_z0 + GRASP_Z_BIAS, GRASP_Z_BIAS*1000))
+
     _, ped_center, ped_top_z = world_bbox(PEDESTAL_PATH)
     place_pos = np.array([ped_center[0], ped_center[1],
                           ped_top_z + cube_dims[2]/2.0 + PLACE_CLEARANCE])
@@ -445,7 +468,7 @@ async def moving_pick_place():
     print("\n[7] APPROACH  (descend, track, match cube speed)")
     prev_cube = as64(cube_p); prev_ee, _ = ee_prim.get_world_pose(); prev_ee = as64(prev_ee)
     prev_t = time.monotonic(); v_cube = np.zeros(3); v_ee = np.zeros(3)
-    ik_fails = 0; good = 0; frame = 0
+    ik_fails = 0; good = 0; frame = 0; last_exy = 1.0
 
     while True:
         cube_p, _ = cube_prim.get_world_pose(); cube_p = as64(cube_p)
@@ -459,10 +482,15 @@ async def moving_pick_place():
         hz = HOVER_HEIGHT + smoothstep(prog) * (GRASP_Z_BIAS - HOVER_HEIGHT)
         lead = LEAD_X * (1.0 - prog)                 # small +X lead, decays to 0
 
+        # don't lower the fingers into cube-top territory until laterally
+        # aligned — prevents a finger clipping the cube's top edge
+        if last_exy > DESCEND_GATE_XY:
+            hz = max(hz, safe_hz)
+
         target = cube_p.copy()
         target[0] = cube_p[0] + v_cube[0]*TAU_CAPTURE + lead
         target[1] = cube_p[1] + v_cube[1]*TAU_CAPTURE
-        target[2] = cube_p[2] + hz
+        target[2] = max(cube_p[2] + hz, ee_floor_z)   # belt-clearance floor
 
         q_new, ok = solve_track(target, q_seed)
         if ok:
@@ -478,6 +506,7 @@ async def moving_pick_place():
         err = ee_p - grasp_pt
         exy = float(np.linalg.norm(err[:2])); ez = float(err[2])
         relv = float(np.linalg.norm(v_ee - v_cube))
+        last_exy = exy
 
         if frame % 6 == 0:
             print(f"    x={cube_x:.3f} h={hz*1000:+5.1f}mm exy={exy*1000:5.1f} "
@@ -508,7 +537,7 @@ async def moving_pick_place():
         v_cube = 0.7*v_cube + 0.3*((cube_p - prev_cube)/dt); prev_cube, prev_t = cube_p.copy(), now
         target = cube_p.copy()
         target[0] += v_cube[0]*TAU_CAPTURE; target[1] += v_cube[1]*TAU_CAPTURE
-        target[2] += GRASP_Z_BIAS
+        target[2] = max(target[2] + GRASP_Z_BIAS, ee_floor_z)
         q_new, ok = solve_track(target, q_seed)
         if ok: q_seed = step_toward(q_seed, q_new)
         command_arm(q_seed)
@@ -518,7 +547,7 @@ async def moving_pick_place():
 
     for _ in range(POST_CLOSE_HOLD):
         cube_p, _ = cube_prim.get_world_pose(); cube_p = as64(cube_p)
-        target = cube_p.copy(); target[2] += GRASP_Z_BIAS
+        target = cube_p.copy(); target[2] = max(target[2] + GRASP_Z_BIAS, ee_floor_z)
         q_new, ok = solve_track(target, q_seed)
         if ok: q_seed = step_toward(q_seed, q_new)
         command_arm(q_seed); command_gripper(GRIPPER_CLOSED_Q7); await next_frame()
@@ -544,8 +573,9 @@ async def moving_pick_place():
         for _ in range(20): command_gripper(GRIPPER_OPEN_Q7); command_arm(q_seed); await next_frame()
         q0 = as64(robot.get_joint_positions())[:6]
         await interp(command_arm, command_gripper, q0, ready_q, READY_MOVE_FRAMES, GRIPPER_OPEN_Q7)
-        print("\n[NEXT] try, in order:")
-        print("   1. sweep GRASP_Z_BIAS a few mm (fingers slightly low/high)")
+        print("\n[NEXT] try ONE of these, in order:")
+        print("   1. GRASP_Z_BIAS: cube slipped below fingers -> 0.014;")
+        print("      fingers landed on cube top -> 0.020   (now %.3f)" % GRASP_Z_BIAS)
         print("   2. if the close bottoms out with no squeeze, resize cube 20->25 mm")
         print("   3. raise FINGER_MAX_FORCE (grip too weak)")
         return
