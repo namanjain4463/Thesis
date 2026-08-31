@@ -91,12 +91,13 @@ GRIPPER_CLOSED_Q7 = 0.010          # narrow -> clamps the cube
 #   sit ~37 mm from the grasp center (measured from the URDF + Lula collision
 #   spheres).  A 20-25 mm cube is far too small -- the fingers close through
 #   empty air and never clamp it (every "no rise" run).  The gripper needs an
-#   The DH CGE-10-10 spec grips ~20-60 mm objects (the fingers grip along
-#   their inner faces, not just the tips, so the effective range is smaller
-#   than a fingertip-only estimate).  45 mm sits mid-range.  The startup
-#   calibration prints the measured fingertip spread for reference; tune the
-#   size from the q7-stall/rise.  Set to None to keep your cube as-is.
-CUBE_TARGET_SIZE = 0.045           # m  (None = don't touch the cube)
+#   IMPORTANT (measured from the finger STL meshes): for a TOP-DOWN grasp the
+#   open fingers only clear an ~18 mm-radius opening, so the cube's corners
+#   must stay inside that -> cube must be <= ~24 mm to fit between the fingers
+#   on the way down.  Bigger cubes (the 45 mm) simply ram the fingers.  The
+#   gripper's 20-60 mm rating is for objects presented differently, not for
+#   top-down insertion around a cube on a belt.  ~20 mm gives a solid grip.
+CUBE_TARGET_SIZE = 0.020           # m  (None = don't touch the cube)
 
 # ---- Gripper finger geometry (for calibration) -----------------------
 #   Fingertip offsets in each finger's LOCAL frame, from the Lula collision
@@ -106,10 +107,10 @@ FINGER_PRIMS = {
     "finger_2": "/World/Lynxmotion/finger_2",
     "finger_3": "/World/Lynxmotion/finger_3",
 }
-FINGER_TIP_LOCAL = {
-    "finger_1": np.array([-0.010, 0.001, -0.042]),
-    "finger_2": np.array([ 0.027, 0.001, -0.001]),
-    "finger_3": np.array([-0.009, 0.001,  0.042]),
+FINGER_TIP_LOCAL = {   # real STL tips (Lula spheres were ~20 mm short of these)
+    "finger_1": np.array([-0.0181, -0.0170, -0.0446]),
+    "finger_2": np.array([ 0.0300, -0.0170,  0.0085]),
+    "finger_3": np.array([-0.0180, -0.0170,  0.0447]),
 }
 
 # ---- Finger drive gains applied at startup (the real grasp fix) -------
@@ -127,9 +128,9 @@ HOVER_HEIGHT = 0.060               # EE hovers this far above cube at the interc
 # We place the grasp center at the cube center, so the EE goes ~19.5 mm the
 # other side of the cube center.  This makes the grasp height correct for any
 # cube size and any (top-down/tilted) orientation automatically.
-GRASP_CENTER_FROM_EE   = 0.0195    # m  ee -> grasp-center distance (calibrated live)
+GRASP_CENTER_FROM_EE   = 0.005     # m  ee -> grasp-center (real STL tips ~= pro_arm_ee)
 GRASP_CENTER_ABOVE_CUBE = 0.000    # m  put grasp center this far above cube center
-FINGERTIP_BELT_CLEAR   = 0.004     # m  keep the grasp center (tips) above the belt
+FINGERTIP_BELT_CLEAR   = 0.004     # m  keep the fingertips above the belt
 DESCEND_GATE_XY        = 0.010     # don't drop to grasp level until aligned within this
 
 # ---- Collision avoidance (conveyor side rails) ------------------------
@@ -542,30 +543,33 @@ async def moving_pick_place():
     c_closed, r_closed = radii(tips_closed)
     ee_p0, _ = ee_prim.get_world_pose()
     gc_from_ee = float(np.linalg.norm(c_closed - as64(ee_p0)))
-    r_lo, r_hi = float(r_closed.min()), float(r_open.max())
-    # graspable object half-width is roughly between the closed and open finger
-    # radii; report both a face-on and corner-on cube size
-    open_gap = 2 * float(r_open.max())     # max object that fits between open fingers
+    # Top-down insertion is limited by the finger INNER clearance (from the STL
+    # meshes ~18 mm radius open), NOT the fingertip radius, so a cube's corners
+    # must stay within ~18 mm -> cube <= ~24 mm to fit between the fingers.
+    TOPDOWN_MAX_CUBE = 0.024
     print("\n[3b] APERTURE CALIBRATION (measured from the live gripper)")
     print("    fingertip radius from grasp-center: closed ~%.0f mm, open ~%.0f mm"
           % (r_closed.mean()*1000, r_open.mean()*1000))
-    print("    grasp-center is %.1f mm from pro_arm_ee (const uses %.1f mm)"
+    print("    grasp-center %.1f mm from pro_arm_ee (using STL const %.1f mm)"
           % (gc_from_ee*1000, GRASP_CENTER_FROM_EE*1000))
-    print("    max object that fits between OPEN fingers: ~%.0f mm" % (open_gap*1000))
-    print("    (DH CGE-10-10 spec grips ~20-60 mm; grip is on the finger inner faces)")
+    print("    TOP-DOWN insertion limit (finger inner clearance): cube <= ~%.0f mm"
+          % (TOPDOWN_MAX_CUBE*1000))
     tgt = (CUBE_TARGET_SIZE if CUBE_TARGET_SIZE else float(np.mean(cube_dims)))
-    if tgt > open_gap:
-        print("    [WARN] cube %.0f mm is too big to enter the OPEN gripper (~%.0f mm)."
-              % (tgt*1000, open_gap*1000))
+    if tgt > TOPDOWN_MAX_CUBE:
+        print("    [WARN] cube %.0f mm is too big for top-down insertion (<= ~%.0f mm)"
+              " — the fingers will ram it. Lower CUBE_TARGET_SIZE."
+              % (tgt*1000, TOPDOWN_MAX_CUBE*1000))
     else:
-        print("    cube %.0f mm fits in the open gripper; grip depends on the close."
-              % (tgt*1000))
+        print("    cube %.0f mm fits between the open fingers (<= ~%.0f mm)."
+              % (tgt*1000, TOPDOWN_MAX_CUBE*1000))
 
     # (e) TOP-DOWN grasp orientation (wrist rides ABOVE the cube -> clears the
     #     near rail) + grasp geometry + tracking helpers + collision monitor
     ready_q = np.deg2rad(READY_Q_DEG)
-    # grasp-center -> ee distance (use the live-measured value if sane)
-    gc = gc_from_ee if 0.008 < gc_from_ee < 0.035 else GRASP_CENTER_FROM_EE
+    # grasp-center -> ee distance.  The Lula collision spheres sit ~20 mm above
+    # the real STL fingertips, so the live tip-centroid measurement is NOT
+    # reliable here; use the STL-derived constant (~5 mm).
+    gc = GRASP_CENTER_FROM_EE
     # top-down EE sits ~gc BELOW the cube center; probe there for reachability
     probe = np.array([pick_x, lane_y, cube_z0 + GRASP_CENTER_ABOVE_CUBE - gc])
     best = None
@@ -603,11 +607,12 @@ async def moving_pick_place():
         return as64(center) - R_track_mat @ offset_ee
     def center_from_ee(ee_world):                         # current grasp center from the EE
         return as64(ee_world) + R_track_mat @ offset_ee
-    center_floor_z  = belt_top_z + FINGERTIP_BELT_CLEAR   # keep the fingers above the belt
-    safe_center_off = float(cube_dims[2]) / 2.0 + 0.005   # stay above cube top until aligned
+    # fingertips are ~gc below the grasp center; keep them above the belt and
+    # (until aligned) above the cube top
+    center_floor_z  = belt_top_z + FINGERTIP_BELT_CLEAR + gc
+    safe_center_off = float(cube_dims[2]) / 2.0 + gc + 0.003
     print("    approach axis (world): %s" % np.round(approach_world, 3))
-    print("    grasp-center offset from ee: %.1f mm (%s)"
-          % (gc*1000, "measured" if 0.008 < gc_from_ee < 0.035 else "URDF const"))
+    print("    grasp-center offset from ee: %.1f mm (STL const)" % (gc*1000))
     print("    grasp center -> cube center %+0.0f mm; belt floor Z %.4f"
           % (GRASP_CENTER_ABOVE_CUBE*1000, center_floor_z))
 
@@ -682,10 +687,18 @@ async def moving_pick_place():
     prev_cube = as64(cube_p); prev_ee, _ = ee_prim.get_world_pose(); prev_ee = as64(prev_ee)
     prev_t = time.monotonic(); v_cube = np.zeros(3); v_ee = np.zeros(3)
     ik_fails = 0; good = 0; frame = 0; last_exy = 1.0
+    cube_x_max = float(cube_p[0]); knocked = False
 
     while True:
         cube_p, _ = cube_prim.get_world_pose(); cube_p = as64(cube_p)
         cube_x = float(cube_p[0])
+        # the belt only moves the cube +X; a backward jump means we hit it
+        if cube_x < cube_x_max - 0.02 and not knocked:
+            knocked = True
+            print("    [CONTACT] cube shoved back %.0f mm — the gripper is hitting it "
+                  "(not clearing). Lower CUBE_TARGET_SIZE / check GRASP_CENTER_FROM_EE."
+                  % ((cube_x_max - cube_x) * 1000))
+        cube_x_max = max(cube_x_max, cube_x)
         now = time.monotonic(); dt = max(now - prev_t, 1e-3)
         v_cube = 0.7*v_cube + 0.3*((cube_p - prev_cube)/dt)
         prev_cube, prev_t = cube_p.copy(), now
