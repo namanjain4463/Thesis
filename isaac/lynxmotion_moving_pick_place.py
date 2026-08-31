@@ -33,7 +33,7 @@ import omni.kit.app
 import omni.timeline
 import omni.usd
 
-from pxr import Usd, UsdGeom, UsdPhysics, PhysxSchema
+from pxr import Usd, UsdGeom, UsdPhysics, PhysxSchema, Gf
 
 from isaacsim.core.prims import SingleArticulation, SingleXFormPrim
 from isaacsim.core.utils.types import ArticulationAction
@@ -79,6 +79,16 @@ READY_Q_DEG = [-75.455, -36.334, 11.833, 3.131, 84.152, -97.696]
 #   CLOSED: q7 =  0.000 -> q8 = q9 =  0.000
 GRIPPER_OPEN_Q7   = 0.010
 GRIPPER_CLOSED_Q7 = 0.000
+
+# ---- Cube size --------------------------------------------------------
+#   A 20 mm cube is at/below this gripper's fully-closed aperture: a
+#   perfectly-centered close reaches q7~=0 with NO preload and the cube is
+#   never gripped (measured: "gripper after close ~0.7 mm").  Enlarging the
+#   cube so the fingers stall ON its faces (q7 > 0 => real squeeze) is the
+#   fix.  The script resizes /World/Cube to this at startup (while stopped)
+#   and prints the measured size so you can confirm.
+#   Set to None to leave your cube untouched and resize it yourself.
+CUBE_TARGET_SIZE = 0.025           # m  (None = don't touch the cube)
 
 # ---- Finger drive gains applied at startup (the real grasp fix) -------
 FINGER_DRIVE_STIFFNESS = 5.0e4     # N/m
@@ -288,6 +298,44 @@ def world_bbox(prim_path):
     return dims, center, float(hi[2])
 
 
+def resize_cube(stage, target_m):
+    """Scale /World/Cube to ~target_m per side (run while STOPPED).  Best
+    effort + self-verifying: the main loop re-measures and prints the size."""
+    try:
+        prim = stage.GetPrimAtPath(CUBE_PATH)
+        if not prim.IsValid():
+            print("[CUBE] not found — skip resize"); return
+        dims, _, _ = world_bbox(CUBE_PATH)
+        cur = float(np.mean(dims))
+        if cur <= 1e-6:
+            print("[CUBE] bad dims — skip resize"); return
+        if abs(cur - target_m) < 5e-4:
+            print("[CUBE] already ~%.1f mm" % (cur*1000)); return
+        ratio = target_m / cur
+        xf = UsdGeom.Xformable(prim)
+        scale_op = trans_op = None
+        for op in xf.GetOrderedXformOps():
+            t = op.GetOpType()
+            if t == UsdGeom.XformOp.TypeScale and scale_op is None: scale_op = op
+            if t == UsdGeom.XformOp.TypeTranslate and trans_op is None: trans_op = op
+        base = (scale_op.Get() if scale_op is not None else None) or Gf.Vec3f(1, 1, 1)
+        if scale_op is None:
+            scale_op = xf.AddScaleOp()
+        scale_op.Set(Gf.Vec3f(float(base[0])*ratio, float(base[1])*ratio,
+                              float(base[2])*ratio))
+        # lift so the enlarged cube doesn't start penetrating the belt
+        grow_half = (target_m - cur) / 2.0
+        if trans_op is not None:
+            tv = trans_op.Get()
+            if tv is not None:
+                trans_op.Set(type(tv)(tv[0], tv[1], tv[2] + grow_half))
+        print("[CUBE] resized ~%.1f -> ~%.1f mm (scale x%.3f)"
+              % (cur*1000, target_m*1000, ratio))
+    except Exception as exc:
+        print("[CUBE] resize failed (%s) — resize /World/Cube to %.0f mm "
+              "manually and re-run." % (exc, target_m*1000))
+
+
 # ======================================================================
 # 5. MAIN
 # ======================================================================
@@ -300,11 +348,13 @@ async def moving_pick_place():
     timeline = omni.timeline.get_timeline_interface()
     stage = omni.usd.get_context().get_stage()
 
-    # (a) STOP -> configure gripper -> PLAY
+    # (a) STOP -> configure gripper (+ resize cube) -> PLAY
     if not timeline.is_stopped():
         print("\n[1] stopping timeline to configure gripper...")
         timeline.stop(); await wait_frames(5)
     configure_gripper(stage)
+    if CUBE_TARGET_SIZE is not None:
+        resize_cube(stage, CUBE_TARGET_SIZE)
     print("\n[1] starting simulation...")
     timeline.play(); await wait_frames(30)
 
@@ -573,11 +623,14 @@ async def moving_pick_place():
         for _ in range(20): command_gripper(GRIPPER_OPEN_Q7); command_arm(q_seed); await next_frame()
         q0 = as64(robot.get_joint_positions())[:6]
         await interp(command_arm, command_gripper, q0, ready_q, READY_MOVE_FRAMES, GRIPPER_OPEN_Q7)
-        print("\n[NEXT] try ONE of these, in order:")
-        print("   1. GRASP_Z_BIAS: cube slipped below fingers -> 0.014;")
-        print("      fingers landed on cube top -> 0.020   (now %.3f)" % GRASP_Z_BIAS)
-        print("   2. if the close bottoms out with no squeeze, resize cube 20->25 mm")
-        print("   3. raise FINGER_MAX_FORCE (grip too weak)")
+        qg = read_gripper()
+        print("\n[NEXT] read the 'gripper after close' q7 above:")
+        print("   * q7 stalled > ~2 mm  -> fingers gripped but slipped:")
+        print("       raise FINGER_MAX_FORCE, or nudge GRASP_Z_BIAS (0.020 if the")
+        print("       fingers sat high on the cube, 0.014 if the cube slipped under)")
+        print("   * q7 near 0 (~%.1f mm now) -> fingers closed with NO preload:" % (qg[0]*1000))
+        print("       the cube is still too small for the aperture — raise")
+        print("       CUBE_TARGET_SIZE (e.g. 0.028) and re-run")
         return
     print("    grasp CONFIRMED (cube is being carried).")
 

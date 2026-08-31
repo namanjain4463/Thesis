@@ -123,10 +123,15 @@ approach, the fix is physical, not a parameter: move the robot ~5–10 cm closer
 to the conveyor (or the conveyor toward the robot) so the cube lane sits well
 inside reach, then re-run.
 
-**Cube size:** you approved bumping to ~25 mm if a centered 20 mm close bottoms
-out with no preload. If the self-test passes but the cube still slips on a
-well-centered close, resize the `/World/Cube` to ~25 mm and re-run before
-chasing other knobs.
+**Cube size (`CUBE_TARGET_SIZE`, default 0.025 m):** a 20 mm cube is at/below
+this gripper's fully-closed aperture — a perfectly-centered close reaches
+q7≈0 with **no preload** (measured: `gripper after close ~0.7 mm`) and the cube
+is never gripped. The script resizes `/World/Cube` to 25 mm at startup (while
+stopped) so the fingers stall **on** the cube faces (q7 > 0 = real squeeze) and
+prints the measured size to confirm. Set `CUBE_TARGET_SIZE = None` to leave your
+cube alone and resize it yourself. The tell in the log after a close:
+`gripper after close` q7 **near 0** = still too small (raise the size);
+q7 **> ~2 mm** = gripped (if it still slips, raise `FINGER_MAX_FORCE`).
 
 ---
 
