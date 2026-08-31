@@ -63,10 +63,38 @@ ROBOT_PATH = "/World/Lynxmotion/root_joint"
 BASE_PATH  = "/World/Lynxmotion"
 EE_PATH    = "/World/Lynxmotion/gripper/pro_arm_ee"
 WRIST_PATH = "/World/Lynxmotion/gripper"        # gripper body / wrist (collision monitor)
-CUBE_PATH  = "/World/Cube"
+ORIG_CUBE_PATH = "/World/Cube"                  # original scene cube
 PEDESTAL_PATH = "/World/Pedestal"
 CONVEYOR_PATH = "/World/ConveyorBelt_A09"       # read live to find the rail tops
 EE_FRAME   = "pro_arm_ee"
+
+# ---- Run mode + grasp object -----------------------------------------
+#   "single" : the moving pick-and-place (one run, watch it)
+#   "sweep"  : a STATIC grasp parameter sweep (object size x friction x grasp
+#              offset x force) to map what actually grips -- see grasp_sweep()
+RUN_MODE = "single"
+
+#   A 3-jaw gripper self-centers on a ROUND object, so we grasp a cylinder
+#   instead of a cube (a cube gets ejected on its corners). The script builds
+#   the cylinder itself and hides the original cube.
+OBJECT_SHAPE    = "cylinder"       # "cylinder" or "cube" (cube = use the scene cube)
+OBJECT_PATH     = "/World/GraspObject"
+OBJECT_DIAMETER = 0.024            # m
+OBJECT_HEIGHT   = 0.040            # m  (tall enough for the fingers to grip the side)
+OBJECT_MASS     = 0.05             # kg
+CUBE_PATH = OBJECT_PATH if OBJECT_SHAPE == "cylinder" else ORIG_CUBE_PATH
+
+# ---- Parameter sweep (RUN_MODE = "sweep") ----------------------------
+#   A STATIC grasp test on the pedestal (no belt) that grasps a cylinder and
+#   measures how much it lifts, across the grid below.  Fast + isolates the
+#   grasp mechanics from the moving tracking.  Results printed + saved to CSV.
+SWEEP_DIAMETERS = [0.018, 0.022, 0.026, 0.030]   # m  cylinder diameter
+SWEEP_FRICTIONS = [0.5, 1.0, 1.5]                # contact friction
+SWEEP_ZOFFSETS  = [-0.005, 0.000, 0.005]         # m  grasp height vs object center
+SWEEP_FORCES    = [20.0, 40.0]                    # N  finger force cap
+SWEEP_OBJ_HEIGHT = 0.045                          # m  cylinder height for the sweep
+SWEEP_CSV = CFG_ROOT + "/grasp_sweep_results.csv"
+SWEEP_RISE_OK = 0.015                             # m  rise counted as a success
 
 # ---- Articulation layout ---------------------------------------------
 ARM_INDICES     = np.array([0, 1, 2, 3, 4, 5], dtype=np.int32)
@@ -391,6 +419,51 @@ def world_bbox(prim_path):
     return dims, center, float(hi[2])
 
 
+def make_cylinder(stage, path, diameter, height, pos, mass):
+    """Create (or replace) an upright cylinder rigid body at `pos` (center),
+    run while STOPPED.  Returns True on success."""
+    r = diameter / 2.0
+    if stage.GetPrimAtPath(path).IsValid():
+        stage.RemovePrim(path)
+    cyl = UsdGeom.Cylinder.Define(stage, path)
+    cyl.CreateRadiusAttr(float(r))
+    cyl.CreateHeightAttr(float(height))
+    cyl.CreateAxisAttr("Z")
+    cyl.CreateExtentAttr([(-r, -r, -height/2.0), (r, r, height/2.0)])
+    UsdGeom.XformCommonAPI(cyl).SetTranslate(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
+    prim = cyl.GetPrim()
+    UsdPhysics.CollisionAPI.Apply(prim)
+    UsdPhysics.RigidBodyAPI.Apply(prim)
+    UsdPhysics.MassAPI.Apply(prim).CreateMassAttr(float(mass))
+    return True
+
+
+def prepare_object(stage):
+    """Build the grasp object (cylinder) on the belt and hide the scene cube.
+    Returns the object's belt-top Z so callers can place things.  No-op for
+    OBJECT_SHAPE == 'cube'."""
+    if OBJECT_SHAPE != "cylinder":
+        return
+    try:
+        dims, center, _ = world_bbox(ORIG_CUBE_PATH)
+        belt = float(center[2] - dims[2] / 2.0)
+        cx, cy = float(center[0]), float(center[1])
+    except Exception:
+        cx, cy, belt = 0.1815, 3.947, 1.7843
+        print("[OBJECT] could not read scene cube; using default belt pose")
+    orig = stage.GetPrimAtPath(ORIG_CUBE_PATH)
+    if orig.IsValid():
+        orig.SetActive(False)                       # remove the cube from the sim
+    try:
+        make_cylinder(stage, OBJECT_PATH, OBJECT_DIAMETER, OBJECT_HEIGHT,
+                      (cx, cy, belt + OBJECT_HEIGHT/2.0), OBJECT_MASS)
+        print("[OBJECT] cylinder d=%.0f mm h=%.0f mm at [%.3f, %.3f, %.4f]"
+              % (OBJECT_DIAMETER*1000, OBJECT_HEIGHT*1000, cx, cy, belt+OBJECT_HEIGHT/2.0))
+    except Exception as exc:
+        print("[OBJECT] cylinder build FAILED (%s). Re-activate the cube or add a "
+              "cylinder named %s manually." % (exc, OBJECT_PATH))
+
+
 def resize_cube(stage, target_m):
     """Scale /World/Cube to ~target_m per side (run while STOPPED).  Best
     effort + self-verifying: the main loop re-measures and prints the size."""
@@ -446,8 +519,14 @@ async def moving_pick_place():
         print("\n[1] stopping timeline to configure gripper...")
         timeline.stop(); await wait_frames(5)
     configure_gripper(stage)
-    if CUBE_TARGET_SIZE is not None:
-        resize_cube(stage, CUBE_TARGET_SIZE)
+    if OBJECT_SHAPE == "cylinder":
+        prepare_object(stage)                       # build cylinder, hide cube
+    else:
+        oc = stage.GetPrimAtPath(ORIG_CUBE_PATH)    # re-activate cube if a prior
+        if oc.IsValid() and not oc.IsActive():      # cylinder run hid it
+            oc.SetActive(True)
+        if CUBE_TARGET_SIZE is not None:
+            resize_cube(stage, CUBE_TARGET_SIZE)
     if FRICTION_BOOST:
         boost_friction(stage, GRIP_FRICTION)
     print("\n[1] starting simulation...")
@@ -590,15 +669,18 @@ async def moving_pick_place():
           % (r_closed.mean()*1000, r_open.mean()*1000))
     print("    grasp-center %.1f mm from pro_arm_ee (using STL const %.1f mm)"
           % (gc_from_ee*1000, GRASP_CENTER_FROM_EE*1000))
-    print("    TOP-DOWN insertion limit (finger inner clearance): cube <= ~%.0f mm"
+    # object horizontal size: cylinder diameter, else cube face/target
+    if OBJECT_SHAPE == "cylinder":
+        tgt = OBJECT_DIAMETER
+    else:
+        tgt = CUBE_TARGET_SIZE if CUBE_TARGET_SIZE else float(np.mean(cube_dims[:2]))
+    print("    TOP-DOWN insertion limit (finger inner clearance): object <= ~%.0f mm"
           % (TOPDOWN_MAX_CUBE*1000))
-    tgt = (CUBE_TARGET_SIZE if CUBE_TARGET_SIZE else float(np.mean(cube_dims)))
     if tgt > TOPDOWN_MAX_CUBE:
-        print("    [WARN] cube %.0f mm is too big for top-down insertion (<= ~%.0f mm)"
-              " — the fingers will ram it. Lower CUBE_TARGET_SIZE."
+        print("    [WARN] object %.0f mm is too big for top-down insertion (<= ~%.0f mm)."
               % (tgt*1000, TOPDOWN_MAX_CUBE*1000))
     else:
-        print("    cube %.0f mm fits between the open fingers (<= ~%.0f mm)."
+        print("    object %.0f mm fits between the open fingers (<= ~%.0f mm)."
               % (tgt*1000, TOPDOWN_MAX_CUBE*1000))
 
     # (e) TOP-DOWN grasp orientation (wrist rides ABOVE the cube -> clears the
@@ -712,12 +794,19 @@ async def moving_pick_place():
               "stop sim (cube resets) and re-run.")
         return
 
-    # (g) WAIT until cube reaches the approach zone
+    # (g) WAIT until cube reaches the approach zone (with a no-motion failsafe)
+    wait_x0 = float(as64(cube_p)[0]); waited = 0
     while True:
         cube_p, _ = cube_prim.get_world_pose()
         command_arm(q_seed); command_gripper(GRIPPER_OPEN_Q7)
         if float(as64(cube_p)[0]) >= approach_x:
             break
+        waited += 1
+        if waited > 1200 and float(as64(cube_p)[0]) < wait_x0 + 0.02:
+            print("\n[ABORT] object isn't moving on the belt — the conveyor may not be "
+                  "conveying the created cylinder. Check /World/ConveyorBelt_A09, or set "
+                  "OBJECT_SHAPE='cube' to use the scene cube.")
+            return
         await next_frame()
 
     # (h) APPROACH: descend + track + match velocity -> capture gate
@@ -933,6 +1022,182 @@ async def moving_pick_place():
 
 
 # ======================================================================
+# 5b. STATIC GRASP PARAMETER SWEEP  (RUN_MODE = "sweep")
+# ======================================================================
+
+async def static_grasp(stage, timeline, solver, d, mu, zoff, force, ready_q,
+                       stand_xy, ped_top):
+    """One static top-down grasp of a cylinder resting on the pedestal.
+    Returns the object's rise (m); negative sentinels for unreachable."""
+    if not timeline.is_stopped():
+        timeline.stop(); await wait_frames(3)
+    # finger force for this combo
+    try:
+        fp = find_finger_joint_prims(stage)
+        for n in FINGER_JOINT_NAMES:
+            if fp.get(n) is not None:
+                set_linear_drive(fp[n], FINGER_DRIVE_STIFFNESS, FINGER_DRIVE_DAMPING, force)
+    except Exception:
+        pass
+    # (re)build the cylinder on the pedestal; hide the scene cube
+    h = SWEEP_OBJ_HEIGHT
+    make_cylinder(stage, OBJECT_PATH, d, h,
+                  (stand_xy[0], stand_xy[1], ped_top + h/2.0 + 0.001), OBJECT_MASS)
+    c = stage.GetPrimAtPath(ORIG_CUBE_PATH)
+    if c.IsValid():
+        c.SetActive(False)
+    boost_friction(stage, mu)
+    timeline.play(); await wait_frames(20)
+
+    robot = SingleArticulation(prim_path=ROBOT_PATH, name="sweep_robot")
+    robot.initialize()
+    ee_prim  = SingleXFormPrim(prim_path=EE_PATH,     name="sweep_ee")
+    obj_prim = SingleXFormPrim(prim_path=OBJECT_PATH, name="sweep_obj")
+
+    def cmd_arm(q):
+        robot.apply_action(ArticulationAction(
+            joint_positions=np.asarray(q, dtype=np.float32), joint_indices=ARM_INDICES))
+    def cmd_grip(q7):
+        robot.apply_action(ArticulationAction(
+            joint_positions=gripper_targets(q7), joint_indices=GRIPPER_INDICES))
+    def solve(pos, R, warm):
+        if R is None:
+            q, ok = solver.compute_inverse_kinematics(
+                frame_name=EE_FRAME, target_position=as64(pos), target_orientation=None,
+                warm_start=as64(warm), position_tolerance=IK_POS_TOL)
+        else:
+            q, ok = solver.compute_inverse_kinematics(
+                frame_name=EE_FRAME, target_position=as64(pos), target_orientation=as64(R),
+                warm_start=as64(warm), position_tolerance=IK_POS_TOL,
+                orientation_tolerance=IK_ORI_TOL)
+        return as64(q), bool(ok)
+
+    obj_p, _ = obj_prim.get_world_pose(); obj_p = as64(obj_p); obj_z0 = float(obj_p[2])
+    gc = GRASP_CENTER_FROM_EE
+    offset = np.array([0.0, 0.0, gc])
+
+    # pick a reachable top-down orientation at the grasp point
+    probe = np.array([obj_p[0], obj_p[1], obj_z0 + zoff - gc])
+    R = None
+    for tilt in (0.0, 10.0, -10.0, 20.0, -20.0):
+        for deg in range(0, 360, 30):
+            Rq = grasp_quat(deg, tilt)
+            _, ok = solve(probe, Rq, ready_q)
+            if ok:
+                R = Rq; break
+        if R is not None:
+            break
+    if R is None:
+        timeline.stop(); return -0.999
+    R_mat = quat_to_R(R)
+    def ee_for_center(cw):
+        return as64(cw) - R_mat @ offset
+
+    # to READY (open), then hover over the object, then descend
+    q0 = as64(robot.get_joint_positions())[:6]
+    for f in range(50):
+        a = smoothstep((f+1)/50); cmd_arm(q0 + a*(ready_q-q0)); cmd_grip(GRIPPER_OPEN_Q7)
+        await next_frame()
+    q_hover, ok = solve(ee_for_center(np.array([obj_p[0], obj_p[1], obj_z0+0.06])), R, ready_q)
+    if not ok:
+        timeline.stop(); return -0.998
+    qc = as64(robot.get_joint_positions())[:6]
+    for f in range(50):
+        a = smoothstep((f+1)/50); cmd_arm(qc + a*(q_hover-qc)); cmd_grip(GRIPPER_OPEN_Q7)
+        await next_frame()
+    q_seed = q_hover
+    q_grasp, ok = solve(ee_for_center(np.array([obj_p[0], obj_p[1], obj_z0+zoff])), R, q_seed)
+    if ok:
+        for f in range(45):
+            a = smoothstep((f+1)/45); cmd_arm(q_seed + a*(q_grasp-q_seed)); cmd_grip(GRIPPER_OPEN_Q7)
+            await next_frame()
+        q_seed = q_grasp
+    # close, hold
+    for f in range(CLOSE_FRAMES):
+        a = smoothstep((f+1)/CLOSE_FRAMES)
+        cmd_arm(q_seed); cmd_grip(GRIPPER_OPEN_Q7 + a*(GRIPPER_CLOSED_Q7-GRIPPER_OPEN_Q7))
+        await next_frame()
+    for _ in range(POST_CLOSE_HOLD):
+        cmd_arm(q_seed); cmd_grip(GRIPPER_CLOSED_Q7); await next_frame()
+    # lift straight up
+    q_lift, ok = solve(ee_for_center(np.array([obj_p[0], obj_p[1], obj_z0+zoff+0.08])), R, q_seed)
+    if ok:
+        for f in range(60):
+            a = smoothstep((f+1)/60); cmd_arm(q_seed + a*(q_lift-q_seed)); cmd_grip(GRIPPER_CLOSED_Q7)
+            await next_frame()
+    for _ in range(20):
+        cmd_arm(q_seed); cmd_grip(GRIPPER_CLOSED_Q7); await next_frame()
+
+    obj_f, _ = obj_prim.get_world_pose()
+    rise = float(as64(obj_f)[2] - obj_z0)
+    timeline.stop(); await wait_frames(2)
+    return rise
+
+
+async def grasp_sweep():
+    print("\n" + "=" * 70)
+    print("STATIC GRASP PARAMETER SWEEP (cylinder on the pedestal)")
+    print("=" * 70)
+    timeline = omni.timeline.get_timeline_interface()
+    stage = omni.usd.get_context().get_stage()
+    if not timeline.is_stopped():
+        timeline.stop(); await wait_frames(3)
+
+    _, ped_c, ped_top = world_bbox(PEDESTAL_PATH)
+    solver = LulaKinematicsSolver(robot_description_path=ROBOT_DESCRIPTION, urdf_path=URDF)
+    base_prim = SingleXFormPrim(prim_path=BASE_PATH, name="sweep_base")
+    bpos, bq = base_prim.get_world_pose()
+    solver.set_robot_base_pose(as64(bpos), as64(bq))
+    ready_q = np.deg2rad(READY_Q_DEG)
+    stand_xy = (float(ped_c[0]), float(ped_c[1]))
+
+    total = (len(SWEEP_DIAMETERS)*len(SWEEP_FRICTIONS)*len(SWEEP_ZOFFSETS)*len(SWEEP_FORCES))
+    print("    %d combos; object h=%.0f mm on pedestal top Z=%.3f\n"
+          % (total, SWEEP_OBJ_HEIGHT*1000, float(ped_top)))
+    rows = []; i = 0
+    for d in SWEEP_DIAMETERS:
+        for mu in SWEEP_FRICTIONS:
+            for zo in SWEEP_ZOFFSETS:
+                for fN in SWEEP_FORCES:
+                    i += 1
+                    try:
+                        rise = await static_grasp(stage, timeline, solver, d, mu, zo, fN,
+                                                   ready_q, stand_xy, float(ped_top))
+                    except Exception as exc:
+                        rise = None
+                        print("    combo %d raised: %s" % (i, exc))
+                    ok = (rise is not None and rise > SWEEP_RISE_OK)
+                    tag = ("OK " if ok else ("unreach" if (rise is not None and rise < -0.5) else " x "))
+                    rows.append((d, mu, zo, fN, rise))
+                    rr = ("%.1f" % (rise*1000)) if rise is not None else "ERR"
+                    print("  [%2d/%2d] d=%2.0f mu=%.1f zoff=%+3.0f F=%2.0f -> rise=%6s mm  %s"
+                          % (i, total, d*1000, mu, zo*1000, fN, rr, tag))
+
+    # save CSV
+    try:
+        with open(SWEEP_CSV, "w") as f:
+            f.write("diameter_mm,friction,z_offset_mm,force_N,rise_mm,success\n")
+            for d, mu, zo, fN, rise in rows:
+                rmm = "" if rise is None else "%.2f" % (rise*1000)
+                succ = 1 if (rise is not None and rise > SWEEP_RISE_OK) else 0
+                f.write("%.1f,%.2f,%.1f,%.1f,%s,%d\n"
+                        % (d*1000, mu, zo*1000, fN, rmm, succ))
+        print("\n    results saved: %s" % SWEEP_CSV)
+    except Exception as exc:
+        print("\n    could not save CSV (%s)" % exc)
+
+    goods = [r for r in rows if r[4] is not None and r[4] > SWEEP_RISE_OK]
+    goods.sort(key=lambda r: -r[4])
+    print("\n  TOP GRASPS (largest lift):")
+    for d, mu, zo, fN, rise in goods[:8]:
+        print("    d=%2.0fmm mu=%.1f zoff=%+3.0fmm F=%2.0fN -> %.1f mm"
+              % (d*1000, mu, zo*1000, fN, rise*1000))
+    if not goods:
+        print("    none lifted — widen the grid (bigger diameter / friction / force)")
+    print("=" * 70)
+
+
+# ======================================================================
 # 6. LAUNCH (Ctrl+Enter; surfaces async exceptions with traceback)
 # ======================================================================
 
@@ -953,6 +1218,7 @@ try:
 except Exception:
     pass
 
-_mpp_task = asyncio.ensure_future(moving_pick_place())
+_entry = grasp_sweep if RUN_MODE == "sweep" else moving_pick_place
+_mpp_task = asyncio.ensure_future(_entry())
 _mpp_task.add_done_callback(_done)
-print("[LYNX] task scheduled — running now")
+print("[LYNX] task scheduled (RUN_MODE=%s) — running now" % RUN_MODE)
