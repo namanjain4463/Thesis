@@ -52,13 +52,24 @@ frame. That is the snapping / branch-changing you saw.
   the script can't edit live), save, stop, re-run.
 
 **Arm (no snapping, no collisions)**
-- One **fixed tool orientation** locked from your known-good READY branch is
-  used for the whole pick — deterministic IK branch, no snapping.
-- **Warm-started full-pose IK** during tracking + a per-frame joint-jump reject
-  filter.
-- **Transfer is joint-space interpolation** between key poses solved **once**
-  (lift-high → over-pedestal → down), each high above the belt and rails, so the
-  arm goes up-and-over and the only intended contact is fingers ↔ cube.
+- **Top-down grasp.** The robot sits on the near side of the belt and the cube
+  lane is only ~165 mm past the near rail. A *tilted* gripper (the old READY
+  orientation leaned 36° off vertical) put the wrist into that rail. The script
+  now searches for a **top-down** orientation (fingers straight down → wrist
+  rides directly over the cube, 165 mm clear of the rail), preferring the most
+  vertical reachable one; it falls back to small belt-aligned tilts, and only
+  to the tilted READY orientation if nothing vertical is reachable (with a
+  warning to move the robot closer).
+- **Grasp height is computed, not hard-coded** — the vertical tip-drop depends
+  on the chosen orientation (≈31 mm top-down vs ≈25 mm tilted), so switching
+  orientation can't drive the fingers into the belt.
+- **Rail-aware travel.** The conveyor bbox is read live for the rail-top height;
+  the quick-lift rises above it and the transfer swings across the belt above
+  it. A **collision monitor** watches the wrist and prints `[COLLISION]` if it
+  ever dips into the near-rail zone (and reports the count at the end).
+- **Warm-started full-pose IK** + a per-frame **rate limiter** (smooth, never
+  freezes). **Transfer is joint-space interpolation** between key poses solved
+  **once**, so the only intended contact is fingers ↔ cube.
 
 **On-the-fly capture (belt never stops), sized to the arm's reach**
 - The cube lane is ~0.45 m out in Y — near the edge of the 550 mm arm's

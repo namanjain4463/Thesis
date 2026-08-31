@@ -62,8 +62,10 @@ URDF              = CFG_ROOT + "/lynxmotion_cge1010.urdf"
 ROBOT_PATH = "/World/Lynxmotion/root_joint"
 BASE_PATH  = "/World/Lynxmotion"
 EE_PATH    = "/World/Lynxmotion/gripper/pro_arm_ee"
+WRIST_PATH = "/World/Lynxmotion/gripper"        # gripper body / wrist (collision monitor)
 CUBE_PATH  = "/World/Cube"
 PEDESTAL_PATH = "/World/Pedestal"
+CONVEYOR_PATH = "/World/ConveyorBelt_A09"       # read live to find the rail tops
 EE_FRAME   = "pro_arm_ee"
 
 # ---- Articulation layout ---------------------------------------------
@@ -99,18 +101,25 @@ FINGER_MAX_FORCE       = 20.0      # N  (grip force cap; raise if it slips)
 READY_HEIGHT = 0.220               # EE above cube at READY
 HOVER_HEIGHT = 0.060               # EE hovers this far above cube at the intercept
 
-# GRASP_Z_BIAS is POSITIVE: the pro_arm_ee frame sits ~25 mm ABOVE the
-# open fingertips at this tool tilt (measured live: with a -8 mm bias the
-# EE bottomed out at ez=+22..24 mm — the fingertips were resting on the
-# belt).  +0.017 puts the finger pads on the cube with the tips ~2 mm
-# clear of the belt.  Tune in the +0.012..+0.020 range:
-#   cube slips out below the fingers -> lower it a little
-#   fingertips drag on the belt      -> raise it a little
-GRASP_Z_BIAS = +0.017
-TIP_DROP           = 0.025         # fingertips this far below EE (measured)
-TIP_BELT_CLEARANCE = 0.002         # never command tips closer to belt than this
-DESCEND_GATE_XY    = 0.008         # don't drop fingers to cube-top level until
+# The fingertips sit FINGER_LEN below the EE frame ALONG the approach axis
+# (measured: EE was 25 mm above the belt-resting tips at the 36 deg READY
+# tilt -> 25/cos36 ~= 31 mm true length).  The grasp height is COMPUTED from
+# this and the actually-selected orientation, so a top-down vs tilted gripper
+# is handled automatically (a tilted gripper foreshortens the vertical drop).
+FINGER_LEN         = 0.031         # m  EE -> fingertip distance along approach
+GRASP_TIP_ABOVE_BELT = 0.007       # m  place fingertips this far above the belt
+TIP_BELT_CLEARANCE = 0.002         # m  never command tips closer to belt than this
+DESCEND_GATE_XY    = 0.010         # don't drop fingers to cube-top level until
                                    # laterally aligned within this
+
+# ---- Collision avoidance (conveyor side rails) ------------------------
+#   The robot is on the near side of the belt; the cube lane is only ~165 mm
+#   past the near rail.  A tilted gripper leans its wrist INTO that rail, so
+#   we grasp TOP-DOWN (wrist directly above the cube) and keep all travel
+#   above the rail tops, which are read live from the conveyor bbox.
+RAIL_CLEAR_MARGIN = 0.050          # m  travel this far above the rail tops
+COLLISION_MONITOR = True           # warn when the wrist enters the rail zone
+TOPDOWN_YAW_STEP  = 15             # deg  granularity of the top-down yaw search
 
 # ---- Intercept / capture ---------------------------------------------
 #   The arm hovers over the lane at the robot's own X (best reach) and
@@ -199,6 +208,24 @@ def rot_to_quat(R):
         w = (m10-m01)/S; x = (m02+m20)/S; y = (m12+m21)/S; z = 0.25*S
     q = np.array([w, x, y, z], dtype=np.float64)
     return q / np.linalg.norm(q)
+
+def _Ry(a):
+    c, s = np.cos(a), np.sin(a)
+    return np.array([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]])
+
+def _Rz(a):
+    c, s = np.cos(a), np.sin(a)
+    return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+
+def grasp_quat(yaw_deg, tilt_deg=0.0):
+    """EE orientation whose approach axis (the EE-frame -Z, per the URDF)
+    points DOWN, spun by `yaw_deg` about vertical and leaned by `tilt_deg`
+    along the belt's X axis.  tilt=0 is pure top-down (wrist directly above
+    the cube).  A small tilt along X keeps the wrist over the lane (does NOT
+    move it toward the near rail) while relaxing the IK if pure top-down is
+    just out of reach."""
+    R = _Ry(np.radians(tilt_deg)) @ _Rz(np.radians(yaw_deg))
+    return rot_to_quat(R)
 
 async def interp(cmd_arm, cmd_grip, q0, q1, frames, grip_q7):
     """Smooth joint-space interpolation between two configs."""
@@ -361,9 +388,10 @@ async def moving_pick_place():
     # (b) init robot + prims
     robot = SingleArticulation(prim_path=ROBOT_PATH, name="lynx_mpp")
     robot.initialize()
-    base_prim = SingleXFormPrim(prim_path=BASE_PATH, name="lynx_base")
-    ee_prim   = SingleXFormPrim(prim_path=EE_PATH,   name="lynx_ee")
-    cube_prim = SingleXFormPrim(prim_path=CUBE_PATH, name="lynx_cube")
+    base_prim  = SingleXFormPrim(prim_path=BASE_PATH,  name="lynx_base")
+    ee_prim    = SingleXFormPrim(prim_path=EE_PATH,    name="lynx_ee")
+    wrist_prim = SingleXFormPrim(prim_path=WRIST_PATH, name="lynx_wrist")
+    cube_prim  = SingleXFormPrim(prim_path=CUBE_PATH,  name="lynx_cube")
 
     print("\n[2] DOF order:", list(robot.dof_names))
     base_pos, base_quat = base_prim.get_world_pose()
@@ -374,21 +402,32 @@ async def moving_pick_place():
     print("    base :", np.round(base_pos, 4))
     print("    cube :", np.round(cube_start, 4), " dims(mm):", np.round(cube_dims*1000, 1))
 
-    # hard floor: never command the EE so low that the fingertips would
-    # be pushed into the belt (that is what blocked the last run at
-    # ez=+22mm and punted the cube downstream)
-    belt_top_z = cube_z0 - float(cube_dims[2]) / 2.0     # cube rests on belt
-    ee_floor_z = belt_top_z + TIP_DROP + TIP_BELT_CLEARANCE
-    safe_hz    = float(cube_dims[2]) / 2.0 + TIP_DROP + 0.002   # tips clear cube top
-    print("    belt top Z: %.4f  EE floor Z: %.4f  (tip drop %.0f mm)"
-          % (belt_top_z, ee_floor_z, TIP_DROP*1000))
-    print("    grasp EE Z: %.4f  (cube center %+0.0f mm)"
-          % (cube_z0 + GRASP_Z_BIAS, GRASP_Z_BIAS*1000))
+    # cube rests on the belt; grasp geometry (below) is derived once the
+    # grasp orientation is chosen, since the vertical tip-drop depends on it
+    belt_top_z = cube_z0 - float(cube_dims[2]) / 2.0
 
     _, ped_center, ped_top_z = world_bbox(PEDESTAL_PATH)
     place_pos = np.array([ped_center[0], ped_center[1],
                           ped_top_z + cube_dims[2]/2.0 + PLACE_CLEARANCE])
     print("    pedestal top Z:", round(ped_top_z, 4), " -> place:", np.round(place_pos, 4))
+
+    # conveyor + side rails (read live) -> rail-top Z and the near-rail Y band
+    try:
+        conv_dims, conv_center, conv_top_z = world_bbox(CONVEYOR_PATH)
+        conv_min_y = conv_center[1] - conv_dims[1] / 2.0
+        conv_max_y = conv_center[1] + conv_dims[1] / 2.0
+        conv_min_x = conv_center[0] - conv_dims[0] / 2.0
+        conv_max_x = conv_center[0] + conv_dims[0] / 2.0
+        rail_top_z = float(conv_top_z)
+    except Exception as exc:
+        print("    [WARN] could not read conveyor bbox (%s); using belt top" % exc)
+        rail_top_z = cube_z0 - float(cube_dims[2]) / 2.0
+        conv_min_y, conv_max_y = lane_y - 0.2, lane_y + 0.9
+        conv_min_x, conv_max_x = -2.0, 2.5
+    clear_z = rail_top_z + RAIL_CLEAR_MARGIN
+    print("    conveyor rail-top Z: %.4f  -> travel/clear Z: %.4f" % (rail_top_z, clear_z))
+    print("    conveyor Y band: [%.3f, %.3f]  near rail ~%.3f"
+          % (conv_min_y, conv_max_y, conv_min_y))
 
     pick_x    = float(base_pos[0])                 # intercept X (best reach)
     approach_x = pick_x + APPROACH_START_OFFSET
@@ -455,16 +494,48 @@ async def moving_pick_place():
         return
     print("    --> gripper OK (symmetric open & close)")
 
-    # (e) fixed grasp orientation + tracking helpers
+    # (e) TOP-DOWN grasp orientation (wrist rides ABOVE the cube -> clears the
+    #     near rail) + grasp geometry + tracking helpers + collision monitor
     ready_q = np.deg2rad(READY_Q_DEG)
-    _, R_grasp_mat = solver.compute_forward_kinematics(EE_FRAME, ready_q)
-    R_grasp = rot_to_quat(R_grasp_mat)
-    print("\n[4] grasp orientation locked (wxyz):", np.round(R_grasp, 4))
-    pick_probe = np.array([pick_x, lane_y, cube_z0 + GRASP_Z_BIAS])
-    _, ok = solve(pick_probe, R_grasp, ready_q)
-    R_track = R_grasp if ok else None
-    if not ok:
-        print("    fixed-orientation IK failed at pick point -> position-only tracking")
+    probe = np.array([pick_x, lane_y, cube_z0 + 0.020])   # nominal grasp height
+    best = None
+    for tilt in (0.0, 10.0, -10.0, 20.0, -20.0):     # prefer most-vertical
+        for deg in range(0, 360, TOPDOWN_YAW_STEP):
+            R = _Ry(np.radians(tilt)) @ _Rz(np.radians(deg))
+            q, ok = solve(probe, rot_to_quat(R), ready_q)
+            if not ok:
+                continue
+            # penalise tilt heavily, then prefer the smoothest (elbow-up) one
+            score = abs(tilt) * 100.0 + float(np.linalg.norm(q - ready_q))
+            if best is None or score < best[0]:
+                best = (score, R, deg, tilt)
+    if best is not None:
+        R_track_mat = best[1]
+        R_track = rot_to_quat(R_track_mat)
+        print("\n[4] TOP-DOWN grasp orientation selected: yaw=%d deg tilt=%d deg "
+              "(reachable; wrist above the cube, clear of the rail)"
+              % (best[2], best[3]))
+    else:
+        _, R_track_mat = solver.compute_forward_kinematics(EE_FRAME, ready_q)
+        R_track_mat = np.asarray(R_track_mat, dtype=np.float64)
+        R_track = rot_to_quat(R_track_mat)
+        print("\n[4] [WARN] no top-down IK solution at the cube — using the tilted")
+        print("    READY orientation, which may clip the near rail. If the wrist")
+        print("    collides, move the robot a few cm closer to the conveyor.")
+    R_grasp = R_track
+
+    # grasp geometry from the SELECTED orientation's approach axis
+    approach_world = R_track_mat @ np.array([0.0, 0.0, -1.0])
+    vtd = FINGER_LEN * max(0.05, -float(approach_world[2]))   # vertical tip drop
+    tips_target_z = belt_top_z + max(GRASP_TIP_ABOVE_BELT, 0.30 * float(cube_dims[2]))
+    GRASP_BIAS = (tips_target_z + vtd) - cube_z0              # EE offset above cube center
+    ee_floor_z = belt_top_z + vtd + TIP_BELT_CLEARANCE
+    safe_hz    = float(cube_dims[2]) / 2.0 + vtd + 0.002      # tips clear cube top
+    print("    approach axis (world): %s  vertical tip-drop: %.1f mm"
+          % (np.round(approach_world, 3), vtd * 1000))
+    print("    grasp EE Z: %.4f (cube %+.0f mm)  fingertips ~%.0f mm above belt"
+          % (cube_z0 + GRASP_BIAS, GRASP_BIAS * 1000, (tips_target_z - belt_top_z) * 1000))
+    print("    EE floor Z: %.4f" % ee_floor_z)
 
     def solve_track(pos, seed):
         q, ok = solve(pos, R_track, seed)
@@ -479,14 +550,32 @@ async def moving_pick_place():
             d = d * (MAX_JOINT_STEP / m)
         return seed + d
 
+    # collision monitor: warn if the wrist dips into the near-rail zone
+    coll_warns = [0]
+    near_lo, near_hi = conv_min_y - 0.03, conv_min_y + 0.10
+    def collision_check(tag):
+        if not COLLISION_MONITOR:
+            return
+        wp, _ = wrist_prim.get_world_pose(); wp = as64(wp)
+        if (conv_min_x <= wp[0] <= conv_max_x and near_lo <= wp[1] <= near_hi
+                and wp[2] < rail_top_z + 0.005):
+            coll_warns[0] += 1
+            if coll_warns[0] <= 6 or coll_warns[0] % 10 == 0:
+                print("    [COLLISION] wrist in near-rail zone Y=%.3f Z=%.4f "
+                      "(rail top %.4f) [%s] #%d"
+                      % (wp[1], wp[2], rail_top_z, tag, coll_warns[0]))
+
     # (f) open + move to READY
     print("\n[5] opening gripper + moving to READY")
     q_now = as64(robot.get_joint_positions())[:6]
     await interp(command_arm, command_gripper, q_now, ready_q, READY_MOVE_FRAMES,
                  GRIPPER_OPEN_Q7)
 
-    # (f2) move to HOVER over the intercept (best-reach)
-    intercept = np.array([pick_x, lane_y, cube_z0 + HOVER_HEIGHT])
+    # (f2) move to HOVER over the intercept.  With a TOP-DOWN grasp the wrist
+    #      rides directly above the cube (at the lane, PAST the near rail), so
+    #      the gripper clears the rail at any height -- a moderate hover is fine.
+    hover_offset = HOVER_HEIGHT
+    intercept = np.array([pick_x, lane_y, cube_z0 + hover_offset])
     q_hover, ok = solve(intercept, R_track, ready_q)
     if not ok:
         q_hover, ok = solve(intercept, None, ready_q)
@@ -527,9 +616,10 @@ async def moving_pick_place():
         v_cube = 0.7*v_cube + 0.3*((cube_p - prev_cube)/dt)
         prev_cube, prev_t = cube_p.copy(), now
 
-        # descend HOVER_HEIGHT -> GRASP_Z_BIAS as the cube crosses approach->capture
+        # descend from the (rail-clearing) hover height to the grasp bias as
+        # the cube crosses approach->capture
         prog = np.clip((cube_x - approach_x) / max(capture_x - approach_x, 1e-6), 0, 1)
-        hz = HOVER_HEIGHT + smoothstep(prog) * (GRASP_Z_BIAS - HOVER_HEIGHT)
+        hz = hover_offset + smoothstep(prog) * (GRASP_BIAS - hover_offset)
         lead = LEAD_X * (1.0 - prog)                 # small +X lead, decays to 0
 
         # don't lower the fingers into cube-top territory until laterally
@@ -549,10 +639,11 @@ async def moving_pick_place():
             ik_fails += 1
         command_arm(q_seed); command_gripper(GRIPPER_OPEN_Q7)
         await next_frame()
+        collision_check("approach")
 
         ee_p, _ = ee_prim.get_world_pose(); ee_p = as64(ee_p)
         v_ee = 0.7*v_ee + 0.3*((ee_p - prev_ee)/dt); prev_ee = ee_p.copy()
-        grasp_pt = cube_p.copy(); grasp_pt[2] = cube_p[2] + GRASP_Z_BIAS
+        grasp_pt = cube_p.copy(); grasp_pt[2] = cube_p[2] + GRASP_BIAS
         err = ee_p - grasp_pt
         exy = float(np.linalg.norm(err[:2])); ez = float(err[2])
         relv = float(np.linalg.norm(v_ee - v_cube))
@@ -576,6 +667,11 @@ async def moving_pick_place():
             print("\n[ABORT] cube passed deadline without alignment "
                   "(exy=%.1fmm relv=%.1fmm/s). Not chasing downstream."
                   % (exy*1000, relv*1000))
+            if coll_warns[0]:
+                print("        NOTE: %d wrist/near-rail collisions were detected — "
+                      "the arm was knocked off the cube. If top-down still clips "
+                      "the rail, move the robot a few cm toward the conveyor."
+                      % coll_warns[0])
             return
         frame += 1
 
@@ -587,27 +683,30 @@ async def moving_pick_place():
         v_cube = 0.7*v_cube + 0.3*((cube_p - prev_cube)/dt); prev_cube, prev_t = cube_p.copy(), now
         target = cube_p.copy()
         target[0] += v_cube[0]*TAU_CAPTURE; target[1] += v_cube[1]*TAU_CAPTURE
-        target[2] = max(target[2] + GRASP_Z_BIAS, ee_floor_z)
+        target[2] = max(target[2] + GRASP_BIAS, ee_floor_z)
         q_new, ok = solve_track(target, q_seed)
         if ok: q_seed = step_toward(q_seed, q_new)
         command_arm(q_seed)
         a = smoothstep((f + 1) / CLOSE_FRAMES)
         command_gripper(GRIPPER_OPEN_Q7 + a*(GRIPPER_CLOSED_Q7 - GRIPPER_OPEN_Q7))
         await next_frame()
+        collision_check("close")
 
     for _ in range(POST_CLOSE_HOLD):
         cube_p, _ = cube_prim.get_world_pose(); cube_p = as64(cube_p)
-        target = cube_p.copy(); target[2] = max(target[2] + GRASP_Z_BIAS, ee_floor_z)
+        target = cube_p.copy(); target[2] = max(target[2] + GRASP_BIAS, ee_floor_z)
         q_new, ok = solve_track(target, q_seed)
         if ok: q_seed = step_toward(q_seed, q_new)
         command_arm(q_seed); command_gripper(GRIPPER_CLOSED_Q7); await next_frame()
 
     print("    gripper after close:", np.round(read_gripper()*1000, 2), "mm")
 
-    # (j) QUICK LIFT + verify rise
+    # (j) QUICK LIFT (straight up, to clear the rail) + verify rise
     print("\n[9] QUICK LIFT")
     ee_p, _ = ee_prim.get_world_pose(); ee_p = as64(ee_p)
-    lift_start = ee_p.copy(); lift_end = lift_start + np.array([0, 0, QUICK_LIFT_HEIGHT])
+    lift_start = ee_p.copy()
+    lift_end = lift_start.copy()
+    lift_end[2] = max(lift_start[2] + QUICK_LIFT_HEIGHT, clear_z)
     for f in range(QUICK_LIFT_FRAMES):
         a = smoothstep((f + 1) / QUICK_LIFT_FRAMES)
         q_new, ok = solve_track(lift_start + a*(lift_end - lift_start), q_seed)
@@ -626,17 +725,17 @@ async def moving_pick_place():
         qg = read_gripper()
         print("\n[NEXT] read the 'gripper after close' q7 above:")
         print("   * q7 stalled > ~2 mm  -> fingers gripped but slipped:")
-        print("       raise FINGER_MAX_FORCE, or nudge GRASP_Z_BIAS (0.020 if the")
-        print("       fingers sat high on the cube, 0.014 if the cube slipped under)")
+        print("       raise FINGER_MAX_FORCE, or nudge GRASP_TIP_ABOVE_BELT (higher")
+        print("       if fingers sat high on the cube; lower if the cube slipped under)")
         print("   * q7 near 0 (~%.1f mm now) -> fingers closed with NO preload:" % (qg[0]*1000))
         print("       the cube is still too small for the aperture — raise")
         print("       CUBE_TARGET_SIZE (e.g. 0.028) and re-run")
         return
     print("    grasp CONFIRMED (cube is being carried).")
 
-    # (k) TRANSFER up-and-over (joint-space, solved once)
+    # (k) TRANSFER up-and-over (joint-space, solved once), all above rail tops
     print("\n[10] TRANSFER to pedestal")
-    carry_z = cube_z0 + CARRY_HEIGHT
+    carry_z = max(cube_z0 + CARRY_HEIGHT, clear_z + 0.05)
 
     def solve_key(pos, warm, label):
         q, ok = solve(pos, R_grasp, warm)
@@ -675,6 +774,7 @@ async def moving_pick_place():
     print("  place XY error : %.1f mm   Z error: %.1f mm" % (xy_err*1000, z_err*1000))
     print("  quick-lift rise: %.1f mm (clean-pick gate %.0f mm)"
           % (rise*1000, FINAL_RISE_GATE*1000))
+    print("  rail collisions: %d" % coll_warns[0])
     print("\n  OVERALL: %s" %
           ("PICK & PLACE SUCCESS" if (xy_err < 0.03 and z_err < 0.03)
            else "placed, but check pedestal error above"))
