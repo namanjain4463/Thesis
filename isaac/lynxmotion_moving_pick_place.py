@@ -84,7 +84,8 @@ OBJECT_PATH     = "/World/GraspObject"
 #   corners) fits the open jaws up to ~36 mm dia.
 OBJECT_DIAMETER = 0.030            # m
 OBJECT_HEIGHT   = 0.022            # m  (aspect < 1 -> stable on the belt)
-OBJECT_MASS     = 0.05             # kg
+OBJECT_MASS     = 0.15             # kg (heavier -> the belt's friction kick can't
+                                   #     spin/tip it; trivially liftable at Fmax=28 N)
 CUBE_PATH = OBJECT_PATH if OBJECT_SHAPE == "cylinder" else ORIG_CUBE_PATH
 
 # ---- Parameter sweep (RUN_MODE = "sweep") ----------------------------
@@ -455,14 +456,23 @@ def make_cylinder(stage, path, diameter, height, pos, mass):
     UsdPhysics.CollisionAPI.Apply(prim)
     UsdPhysics.RigidBodyAPI.Apply(prim)
     UsdPhysics.MassAPI.Apply(prim).CreateMassAttr(float(mass))
-    # stability: damping + extra solver iterations so it doesn't bounce/jitter
+    # stability: the object was bouncing + TUMBLING on the moving belt (its bbox
+    # read 40x35x33 mm instead of 30x30x22 -> tipped on its side) and drifting
+    # ~25 mm out of the arm's reach.  Kill that at the source:
+    #   * cap the depenetration velocity so a fresh spawn can't POP off the belt
+    #   * cap linear/angular velocity so the belt's friction kick can't FLING or
+    #     spin it (it can still ride the belt at 0.1 m/s, well under the cap)
+    #   * heavy damping so any induced tip/roll decays instead of building up
     try:
         rb = PhysxSchema.PhysxRigidBodyAPI.Apply(prim)
-        rb.CreateLinearDampingAttr().Set(0.5)
-        rb.CreateAngularDampingAttr().Set(0.5)
+        rb.CreateLinearDampingAttr().Set(1.0)
+        rb.CreateAngularDampingAttr().Set(5.0)
         rb.CreateSolverPositionIterationCountAttr().Set(32)
-        rb.CreateSolverVelocityIterationCountAttr().Set(4)
-        rb.CreateSleepThresholdAttr().Set(0.0)
+        rb.CreateSolverVelocityIterationCountAttr().Set(8)
+        rb.CreateMaxDepenetrationVelocityAttr().Set(0.5)   # no spawn pop
+        rb.CreateMaxLinearVelocityAttr().Set(0.8)          # can't be flung off
+        rb.CreateMaxAngularVelocityAttr().Set(1.5)         # can't tumble fast
+        rb.CreateSleepThresholdAttr().Set(0.0)             # stays awake on the belt
     except Exception:
         pass
     return True
@@ -745,8 +755,15 @@ async def moving_pick_place():
     gc = GRASP_CENTER_FROM_EE
     # top-down EE sits ~gc BELOW the cube center; probe there for reachability
     probe = np.array([pick_x, lane_y, cube_z0 + GRASP_CENTER_ABOVE_CUBE - gc])
+    #   Only NEAR-VERTICAL orientations are allowed (|tilt| <= TOPDOWN_MAX_TILT):
+    #   a vertical wrist rides directly ABOVE the cube (past the near rail), so
+    #   it clears the rail at any height.  A bounded tilt (<=20 deg) over a cube
+    #   ~0.3 m past the rail still keeps the wrist well clear.  We NEVER fall back
+    #   to the strongly-tilted READY orientation -- that is exactly what planted
+    #   the wrist on the blue rail before.
+    TOPDOWN_MAX_TILT = 20.0
     best = None
-    for tilt in (0.0, 10.0, -10.0, 20.0, -20.0):     # prefer most-vertical
+    for tilt in (0.0, 5.0, -5.0, 10.0, -10.0, 15.0, -15.0, 20.0, -20.0):  # most-vertical first
         for deg in range(0, 360, TOPDOWN_YAW_STEP):
             R = _Ry(np.radians(tilt)) @ _Rz(np.radians(deg))
             q, ok = solve(probe, rot_to_quat(R), ready_q)
@@ -756,19 +773,24 @@ async def moving_pick_place():
             score = abs(tilt) * 100.0 + float(np.linalg.norm(q - ready_q))
             if best is None or score < best[0]:
                 best = (score, R, deg, tilt)
-    if best is not None:
-        R_track_mat = best[1]
-        R_track = rot_to_quat(R_track_mat)
-        print("\n[4] TOP-DOWN grasp orientation selected: yaw=%d deg tilt=%d deg "
-              "(reachable; wrist above the cube, clear of the rail)"
-              % (best[2], best[3]))
-    else:
-        _, R_track_mat = solver.compute_forward_kinematics(EE_FRAME, ready_q)
-        R_track_mat = np.asarray(R_track_mat, dtype=np.float64)
-        R_track = rot_to_quat(R_track_mat)
-        print("\n[4] [WARN] no top-down IK solution at the cube — using the tilted")
-        print("    READY orientation, which may clip the near rail. If the wrist")
-        print("    collides, move the robot a few cm closer to the conveyor.")
+    if best is None:
+        print("\n[ABORT] no near-vertical (top-down) grasp is reachable at the "
+              "cube lane [%.3f, %.3f]." % (pick_x, lane_y))
+        print("    The lane is %.0f mm out in Y from the base -- at/over the arm's"
+              % ((lane_y - float(base_pos[1])) * 1000))
+        print("    top-down reach envelope.  NOT using the tilted orientation (that")
+        print("    is what planted the wrist on the near rail).  Fixes, in order:")
+        print("      1. If the object was bouncing/drifting OUTWARD it read further")
+        print("         out than it rests -- it is now heavier + velocity-capped, so")
+        print("         re-run; a settled object usually falls back inside reach.")
+        print("      2. Otherwise move the robot a few cm toward the conveyor")
+        print("         (or the conveyor toward the robot) and re-run.")
+        return
+    R_track_mat = best[1]
+    R_track = rot_to_quat(R_track_mat)
+    print("\n[4] TOP-DOWN grasp orientation selected: yaw=%d deg tilt=%d deg "
+          "(reachable, near-vertical; wrist above the cube, clear of the rail)"
+          % (best[2], best[3]))
     R_grasp = R_track
 
     # grasp-center model: we command the GRASP CENTER (where the fingers

@@ -191,14 +191,35 @@ snapped upward, launching the object (the 100 mm+ over-lift). Fixes:
 - every "clear/carry" height is capped to a **known-reachable ceiling**
   (~`READY_HEIGHT` above the belt); the quick-lift is now a short, gentle
   straight-up pull off the belt (`QUICK_LIFT_HEIGHT`, no rail-clearance strain);
-- **physics stabilization** — TGS solver + stabilization on the scene, plus
-  linear/angular damping and extra solver iterations on the object, so contacts
-  settle instead of ringing;
+- **physics stabilization** — TGS solver + stabilization on the scene;
 - **lower grip force** (`FINGER_MAX_FORCE` 40 → 28 N) and a smoothed velocity
   feed-forward (`VEL_SMOOTH`) so the close doesn't punch the object.
 
-What to watch on the next run: the console now prints a `reach ceiling` and a
-`carry Z` line — both should be comfortably reachable (no `[WARN] IK failed for
-lift-high`), and the `cube rise after quick lift` should be ~80 mm (the lift
-height), not 100 mm+. If the wrist still buzzes, raise `CMD_SMOOTH` toward 0.7;
-if the object still hops on close, drop `FINGER_MAX_FORCE` a few N.
+**3. The bounce also drifted the object OUT OF REACH and made the arm hit the
+rail.** On the moving belt the light (50 g) cylinder was popping on spawn and
+being spun by the belt's friction — its bbox read `40×35×33 mm` (it had tipped
+onto its side) and it drifted ~25 mm further out in Y. That extra 25 mm pushed
+the lane just past the arm's **top-down reach envelope**, so the top-down IK
+search found nothing and the code fell back to the strongly-tilted READY
+orientation — which leans the wrist straight onto the near blue rail (the crash
+in the video). Fixes:
+- **Object can't bounce or tumble any more.** On the belt it is now heavier
+  (`OBJECT_MASS` 50 → 150 g) with a **capped depenetration velocity** (no spawn
+  pop), **capped linear/angular velocity** (the belt can't fling or spin it) and
+  heavy damping — so it rides the belt upright at its rest Y and stays in reach.
+- **The arm never uses the rail-clipping orientation.** The grasp orientation is
+  now restricted to **near-vertical only** (`|tilt| ≤ 20°`). If no such
+  orientation is reachable at the cube, the script **aborts cleanly and stays
+  safe** instead of lunging with a tilted wrist — the tilted READY fallback is
+  gone. (The later "dynamic gripper height / retreat when the object is too
+  large" pass builds on this safe-abort behaviour.)
+
+What to watch on the next run: the object should stay upright (bbox ≈
+`30×30×22 mm`) and NOT drift; `[4]` should print `TOP-DOWN grasp orientation
+selected … near-vertical` (no `[WARN] no top-down IK solution`); the console
+prints a `reach ceiling` and a `carry Z` line — both comfortably reachable (no
+`[WARN] IK failed for lift-high`); and `cube rise after quick lift` should be
+~80 mm, not 100 mm+. If the wrist still buzzes, raise `CMD_SMOOTH` toward 0.7;
+if the object still hops on close, drop `FINGER_MAX_FORCE` a few N. If `[4]`
+still aborts as unreachable, the lane is genuinely at the arm's limit — move the
+robot a few cm toward the conveyor.
