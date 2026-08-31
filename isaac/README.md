@@ -134,15 +134,25 @@ approach, the fix is physical, not a parameter: move the robot ~5–10 cm closer
 to the conveyor (or the conveyor toward the robot) so the cube lane sits well
 inside reach, then re-run.
 
-**Cube size (`CUBE_TARGET_SIZE`, default 0.025 m):** a 20 mm cube is at/below
-this gripper's fully-closed aperture — a perfectly-centered close reaches
-q7≈0 with **no preload** (measured: `gripper after close ~0.7 mm`) and the cube
-is never gripped. The script resizes `/World/Cube` to 25 mm at startup (while
-stopped) so the fingers stall **on** the cube faces (q7 > 0 = real squeeze) and
-prints the measured size to confirm. Set `CUBE_TARGET_SIZE = None` to leave your
-cube alone and resize it yourself. The tell in the log after a close:
-`gripper after close` q7 **near 0** = still too small (raise the size);
-q7 **> ~2 mm** = gripped (if it still slips, raise `FINGER_MAX_FORCE`).
+**Gripper is large; the cube must match it (`CUBE_TARGET_SIZE`, default 0.080 m).**
+Computed from your URDF + Lula collision spheres: this CGE-10-10 is a big 3-jaw
+gripper whose fingertips sit ~37 mm from the grasp center even fully closed, and
+the fingers only travel ~7 mm radially. So it grips objects roughly **75–88 mm**
+across (face-on) — a 20–25 mm cube closes through empty air and never touches
+(every "no rise" run). The script:
+- runs an **aperture calibration** at startup (`[3b]` in the log) that measures
+  the real fingertip spread live and prints the graspable size range + whether
+  your `CUBE_TARGET_SIZE` is inside it;
+- resizes `/World/Cube` to `CUBE_TARGET_SIZE` (80 mm) so it's graspable;
+- positions the grasp by the gripper's **grasp center** (≈19.5 mm toward the
+  gripper from `pro_arm_ee`, measured live), placing that center at the cube
+  center — so the grasp height is correct for any cube size or orientation, and
+  the place puts the *cube* (not the EE) on the pedestal.
+
+The tell after a close: `gripper after close` q7 **near 0** = cube still too
+small (raise `CUBE_TARGET_SIZE` toward the calibrated range); q7 **stalled >
+~2 mm** = gripped (if it still slips, raise `FINGER_MAX_FORCE`). Set
+`CUBE_TARGET_SIZE = None` to keep your own cube and resize it yourself.
 
 ---
 

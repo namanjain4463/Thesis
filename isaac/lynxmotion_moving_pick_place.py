@@ -83,14 +83,29 @@ GRIPPER_OPEN_Q7   = 0.010
 GRIPPER_CLOSED_Q7 = 0.000
 
 # ---- Cube size --------------------------------------------------------
-#   A 20 mm cube is at/below this gripper's fully-closed aperture: a
-#   perfectly-centered close reaches q7~=0 with NO preload and the cube is
-#   never gripped (measured: "gripper after close ~0.7 mm").  Enlarging the
-#   cube so the fingers stall ON its faces (q7 > 0 => real squeeze) is the
-#   fix.  The script resizes /World/Cube to this at startup (while stopped)
-#   and prints the measured size so you can confirm.
+#   This CGE-10-10 is a LARGE 3-jaw gripper: even fully closed the fingertips
+#   sit ~37 mm from the grasp center (measured from the URDF + Lula collision
+#   spheres).  A 20-25 mm cube is far too small -- the fingers close through
+#   empty air and never clamp it (every "no rise" run).  The gripper needs an
+#   object ~75-88 mm across (the fingers only travel ~7 mm radially, so the
+#   grip band is narrow).  The startup calibration (below) prints the measured
+#   range; 80 mm sits in the middle of it.  Tune from the q7-stall/rise.
 #   Set to None to leave your cube untouched and resize it yourself.
-CUBE_TARGET_SIZE = 0.025           # m  (None = don't touch the cube)
+CUBE_TARGET_SIZE = 0.080           # m  (None = don't touch the cube)
+
+# ---- Gripper finger geometry (for calibration) -----------------------
+#   Fingertip offsets in each finger's LOCAL frame, from the Lula collision
+#   spheres, used to measure the real aperture live at startup.
+FINGER_PRIMS = {
+    "finger_1": "/World/Lynxmotion/finger_1",
+    "finger_2": "/World/Lynxmotion/finger_2",
+    "finger_3": "/World/Lynxmotion/finger_3",
+}
+FINGER_TIP_LOCAL = {
+    "finger_1": np.array([-0.010, 0.001, -0.042]),
+    "finger_2": np.array([ 0.027, 0.001, -0.001]),
+    "finger_3": np.array([-0.009, 0.001,  0.042]),
+}
 
 # ---- Finger drive gains applied at startup (the real grasp fix) -------
 FINGER_DRIVE_STIFFNESS = 5.0e4     # N/m
@@ -101,16 +116,16 @@ FINGER_MAX_FORCE       = 20.0      # N  (grip force cap; raise if it slips)
 READY_HEIGHT = 0.220               # EE above cube at READY
 HOVER_HEIGHT = 0.060               # EE hovers this far above cube at the intercept
 
-# The fingertips sit FINGER_LEN below the EE frame ALONG the approach axis
-# (measured: EE was 25 mm above the belt-resting tips at the 36 deg READY
-# tilt -> 25/cos36 ~= 31 mm true length).  The grasp height is COMPUTED from
-# this and the actually-selected orientation, so a top-down vs tilted gripper
-# is handled automatically (a tilted gripper foreshortens the vertical drop).
-FINGER_LEN         = 0.031         # m  EE -> fingertip distance along approach
-GRASP_TIP_ABOVE_BELT = 0.007       # m  place fingertips this far above the belt
-TIP_BELT_CLEARANCE = 0.002         # m  never command tips closer to belt than this
-DESCEND_GATE_XY    = 0.010         # don't drop fingers to cube-top level until
-                                   # laterally aligned within this
+# The gripper's GRASP CENTER (where the 3 fingers converge) sits this far
+# from the pro_arm_ee frame, TOWARD the gripper along the approach axis
+# (measured from the URDF: ~19.5 mm; re-measured live during calibration).
+# We place the grasp center at the cube center, so the EE goes ~19.5 mm the
+# other side of the cube center.  This makes the grasp height correct for any
+# cube size and any (top-down/tilted) orientation automatically.
+GRASP_CENTER_FROM_EE   = 0.0195    # m  ee -> grasp-center distance (calibrated live)
+GRASP_CENTER_ABOVE_CUBE = 0.000    # m  put grasp center this far above cube center
+FINGERTIP_BELT_CLEAR   = 0.004     # m  keep the grasp center (tips) above the belt
+DESCEND_GATE_XY        = 0.010     # don't drop to grasp level until aligned within this
 
 # ---- Collision avoidance (conveyor side rails) ------------------------
 #   The robot is on the near side of the belt; the cube lane is only ~165 mm
@@ -208,6 +223,14 @@ def rot_to_quat(R):
         w = (m10-m01)/S; x = (m02+m20)/S; y = (m12+m21)/S; z = 0.25*S
     q = np.array([w, x, y, z], dtype=np.float64)
     return q / np.linalg.norm(q)
+
+def quat_to_R(q):
+    """wxyz quaternion -> 3x3 rotation matrix."""
+    w, x, y, z = np.asarray(q, dtype=np.float64)
+    return np.array([
+        [1-2*(y*y+z*z), 2*(x*y-z*w),   2*(x*z+y*w)],
+        [2*(x*y+z*w),   1-2*(x*x+z*z), 2*(y*z-x*w)],
+        [2*(x*z-y*w),   2*(y*z+x*w),   1-2*(x*x+y*y)]], dtype=np.float64)
 
 def _Ry(a):
     c, s = np.cos(a), np.sin(a)
@@ -392,6 +415,15 @@ async def moving_pick_place():
     ee_prim    = SingleXFormPrim(prim_path=EE_PATH,    name="lynx_ee")
     wrist_prim = SingleXFormPrim(prim_path=WRIST_PATH, name="lynx_wrist")
     cube_prim  = SingleXFormPrim(prim_path=CUBE_PATH,  name="lynx_cube")
+    finger_prims = {n: SingleXFormPrim(prim_path=p, name="lynx_"+n)
+                    for n, p in FINGER_PRIMS.items()}
+
+    def fingertips_world():
+        pts = {}
+        for n, fp in finger_prims.items():
+            p, q = fp.get_world_pose()
+            pts[n] = as64(p) + quat_to_R(q) @ FINGER_TIP_LOCAL[n]
+        return pts
 
     print("\n[2] DOF order:", list(robot.dof_names))
     base_pos, base_quat = base_prim.get_world_pose()
@@ -473,12 +505,12 @@ async def moving_pick_place():
                 position_tolerance=IK_POS_TOL, orientation_tolerance=IK_ORI_TOL)
         return as64(q), bool(ok)
 
-    # (d) GRIPPER SELF-TEST
+    # (d) GRIPPER SELF-TEST + APERTURE CALIBRATION
     print("\n[3] GRIPPER SELF-TEST")
     for _ in range(25): command_gripper(GRIPPER_OPEN_Q7); await next_frame()
-    q_open = read_gripper()
+    q_open = read_gripper(); tips_open = fingertips_world()
     for _ in range(25): command_gripper(GRIPPER_CLOSED_Q7); await next_frame()
-    q_closed = read_gripper()
+    q_closed = read_gripper(); tips_closed = fingertips_world()
     for _ in range(20): command_gripper(GRIPPER_OPEN_Q7); await next_frame()
     q_reopen = read_gripper()
     print("    OPEN  :", np.round(q_open*1000, 2), "mm")
@@ -494,10 +526,39 @@ async def moving_pick_place():
         return
     print("    --> gripper OK (symmetric open & close)")
 
+    # aperture calibration: measure the fingertip spread + grasp center
+    def radii(tips):
+        pts = np.array([tips[n] for n in FINGER_PRIMS])
+        c = pts.mean(axis=0)
+        return c, np.linalg.norm(pts - c, axis=1)      # centroid, per-finger radius
+    c_open, r_open = radii(tips_open)
+    c_closed, r_closed = radii(tips_closed)
+    ee_p0, _ = ee_prim.get_world_pose()
+    gc_from_ee = float(np.linalg.norm(c_closed - as64(ee_p0)))
+    r_lo, r_hi = float(r_closed.min()), float(r_open.max())
+    # graspable object half-width is roughly between the closed and open finger
+    # radii; report both a face-on and corner-on cube size
+    print("\n[3b] APERTURE CALIBRATION (measured from the live gripper)")
+    print("    fingertip radius from grasp-center: closed ~%.0f mm, open ~%.0f mm"
+          % (r_closed.mean()*1000, r_open.mean()*1000))
+    print("    grasp-center is %.1f mm from pro_arm_ee (const uses %.1f mm)"
+          % (gc_from_ee*1000, GRASP_CENTER_FROM_EE*1000))
+    print("    -> graspable cube ~%.0f-%.0f mm face-on (or ~%.0f-%.0f mm corner-on)"
+          % (2*r_lo*1000, 2*r_hi*1000, 2*r_lo/np.sqrt(2)*1000, 2*r_hi/np.sqrt(2)*1000))
+    tgt = (CUBE_TARGET_SIZE if CUBE_TARGET_SIZE else float(np.mean(cube_dims)))
+    if not (2*r_lo/np.sqrt(2) <= tgt <= 2*r_hi):
+        print("    [WARN] cube %.0f mm is OUTSIDE the graspable range — expect no grip."
+              % (tgt*1000))
+    else:
+        print("    cube %.0f mm is within the graspable range." % (tgt*1000))
+
     # (e) TOP-DOWN grasp orientation (wrist rides ABOVE the cube -> clears the
     #     near rail) + grasp geometry + tracking helpers + collision monitor
     ready_q = np.deg2rad(READY_Q_DEG)
-    probe = np.array([pick_x, lane_y, cube_z0 + 0.020])   # nominal grasp height
+    # grasp-center -> ee distance (use the live-measured value if sane)
+    gc = gc_from_ee if 0.008 < gc_from_ee < 0.035 else GRASP_CENTER_FROM_EE
+    # top-down EE sits ~gc BELOW the cube center; probe there for reachability
+    probe = np.array([pick_x, lane_y, cube_z0 + GRASP_CENTER_ABOVE_CUBE - gc])
     best = None
     for tilt in (0.0, 10.0, -10.0, 20.0, -20.0):     # prefer most-vertical
         for deg in range(0, 360, TOPDOWN_YAW_STEP):
@@ -524,18 +585,22 @@ async def moving_pick_place():
         print("    collides, move the robot a few cm closer to the conveyor.")
     R_grasp = R_track
 
-    # grasp geometry from the SELECTED orientation's approach axis
+    # grasp-center model: we command the GRASP CENTER (where the fingers
+    # converge, gc from the EE toward the gripper) to sit at the cube center,
+    # then convert to the EE target that IK needs.
     approach_world = R_track_mat @ np.array([0.0, 0.0, -1.0])
-    vtd = FINGER_LEN * max(0.05, -float(approach_world[2]))   # vertical tip drop
-    tips_target_z = belt_top_z + max(GRASP_TIP_ABOVE_BELT, 0.30 * float(cube_dims[2]))
-    GRASP_BIAS = (tips_target_z + vtd) - cube_z0              # EE offset above cube center
-    ee_floor_z = belt_top_z + vtd + TIP_BELT_CLEARANCE
-    safe_hz    = float(cube_dims[2]) / 2.0 + vtd + 0.002      # tips clear cube top
-    print("    approach axis (world): %s  vertical tip-drop: %.1f mm"
-          % (np.round(approach_world, 3), vtd * 1000))
-    print("    grasp EE Z: %.4f (cube %+.0f mm)  fingertips ~%.0f mm above belt"
-          % (cube_z0 + GRASP_BIAS, GRASP_BIAS * 1000, (tips_target_z - belt_top_z) * 1000))
-    print("    EE floor Z: %.4f" % ee_floor_z)
+    offset_ee = np.array([0.0, 0.0, gc])                 # grasp center in the EE frame
+    def ee_for_center(center):                            # EE target to put center at `center`
+        return as64(center) - R_track_mat @ offset_ee
+    def center_from_ee(ee_world):                         # current grasp center from the EE
+        return as64(ee_world) + R_track_mat @ offset_ee
+    center_floor_z  = belt_top_z + FINGERTIP_BELT_CLEAR   # keep the fingers above the belt
+    safe_center_off = float(cube_dims[2]) / 2.0 + 0.005   # stay above cube top until aligned
+    print("    approach axis (world): %s" % np.round(approach_world, 3))
+    print("    grasp-center offset from ee: %.1f mm (%s)"
+          % (gc*1000, "measured" if 0.008 < gc_from_ee < 0.035 else "URDF const"))
+    print("    grasp center -> cube center %+0.0f mm; belt floor Z %.4f"
+          % (GRASP_CENTER_ABOVE_CUBE*1000, center_floor_z))
 
     def solve_track(pos, seed):
         q, ok = solve(pos, R_track, seed)
@@ -574,8 +639,8 @@ async def moving_pick_place():
     # (f2) move to HOVER over the intercept.  With a TOP-DOWN grasp the wrist
     #      rides directly above the cube (at the lane, PAST the near rail), so
     #      the gripper clears the rail at any height -- a moderate hover is fine.
-    hover_offset = HOVER_HEIGHT
-    intercept = np.array([pick_x, lane_y, cube_z0 + hover_offset])
+    hover_center = np.array([pick_x, lane_y, cube_z0 + HOVER_HEIGHT])
+    intercept = ee_for_center(hover_center)
     q_hover, ok = solve(intercept, R_track, ready_q)
     if not ok:
         q_hover, ok = solve(intercept, None, ready_q)
@@ -616,21 +681,21 @@ async def moving_pick_place():
         v_cube = 0.7*v_cube + 0.3*((cube_p - prev_cube)/dt)
         prev_cube, prev_t = cube_p.copy(), now
 
-        # descend from the (rail-clearing) hover height to the grasp bias as
+        # descend the GRASP CENTER from hover height to the cube center as
         # the cube crosses approach->capture
         prog = np.clip((cube_x - approach_x) / max(capture_x - approach_x, 1e-6), 0, 1)
-        hz = hover_offset + smoothstep(prog) * (GRASP_BIAS - hover_offset)
+        c_off = HOVER_HEIGHT + smoothstep(prog) * (GRASP_CENTER_ABOVE_CUBE - HOVER_HEIGHT)
         lead = LEAD_X * (1.0 - prog)                 # small +X lead, decays to 0
 
-        # don't lower the fingers into cube-top territory until laterally
-        # aligned — prevents a finger clipping the cube's top edge
+        # keep the fingers above the cube top until laterally aligned
         if last_exy > DESCEND_GATE_XY:
-            hz = max(hz, safe_hz)
+            c_off = max(c_off, safe_center_off)
 
-        target = cube_p.copy()
-        target[0] = cube_p[0] + v_cube[0]*TAU_CAPTURE + lead
-        target[1] = cube_p[1] + v_cube[1]*TAU_CAPTURE
-        target[2] = max(cube_p[2] + hz, ee_floor_z)   # belt-clearance floor
+        center_tgt = cube_p.copy()
+        center_tgt[0] = cube_p[0] + v_cube[0]*TAU_CAPTURE + lead
+        center_tgt[1] = cube_p[1] + v_cube[1]*TAU_CAPTURE
+        center_tgt[2] = max(cube_p[2] + c_off, center_floor_z)   # belt floor
+        target = ee_for_center(center_tgt)           # EE target for IK
 
         q_new, ok = solve_track(target, q_seed)
         if ok:
@@ -643,14 +708,16 @@ async def moving_pick_place():
 
         ee_p, _ = ee_prim.get_world_pose(); ee_p = as64(ee_p)
         v_ee = 0.7*v_ee + 0.3*((ee_p - prev_ee)/dt); prev_ee = ee_p.copy()
-        grasp_pt = cube_p.copy(); grasp_pt[2] = cube_p[2] + GRASP_BIAS
-        err = ee_p - grasp_pt
+        # error of the GRASP CENTER vs the cube center
+        cur_center = center_from_ee(ee_p)
+        desired_center = cube_p.copy(); desired_center[2] = cube_p[2] + GRASP_CENTER_ABOVE_CUBE
+        err = cur_center - desired_center
         exy = float(np.linalg.norm(err[:2])); ez = float(err[2])
         relv = float(np.linalg.norm(v_ee - v_cube))
         last_exy = exy
 
         if frame % 6 == 0:
-            print(f"    x={cube_x:.3f} h={hz*1000:+5.1f}mm exy={exy*1000:5.1f} "
+            print(f"    x={cube_x:.3f} c_off={c_off*1000:+5.1f}mm exy={exy*1000:5.1f} "
                   f"ez={ez*1000:+5.1f}mm vcx={v_cube[0]:+.3f} vex={v_ee[0]:+.3f} "
                   f"relv={relv*1000:5.1f}mm/s good={good}")
 
@@ -681,9 +748,10 @@ async def moving_pick_place():
         cube_p, _ = cube_prim.get_world_pose(); cube_p = as64(cube_p)
         now = time.monotonic(); dt = max(now - prev_t, 1e-3)
         v_cube = 0.7*v_cube + 0.3*((cube_p - prev_cube)/dt); prev_cube, prev_t = cube_p.copy(), now
-        target = cube_p.copy()
-        target[0] += v_cube[0]*TAU_CAPTURE; target[1] += v_cube[1]*TAU_CAPTURE
-        target[2] = max(target[2] + GRASP_BIAS, ee_floor_z)
+        center_tgt = cube_p.copy()
+        center_tgt[0] += v_cube[0]*TAU_CAPTURE; center_tgt[1] += v_cube[1]*TAU_CAPTURE
+        center_tgt[2] = max(cube_p[2] + GRASP_CENTER_ABOVE_CUBE, center_floor_z)
+        target = ee_for_center(center_tgt)
         q_new, ok = solve_track(target, q_seed)
         if ok: q_seed = step_toward(q_seed, q_new)
         command_arm(q_seed)
@@ -694,7 +762,9 @@ async def moving_pick_place():
 
     for _ in range(POST_CLOSE_HOLD):
         cube_p, _ = cube_prim.get_world_pose(); cube_p = as64(cube_p)
-        target = cube_p.copy(); target[2] = max(target[2] + GRASP_BIAS, ee_floor_z)
+        center_tgt = cube_p.copy()
+        center_tgt[2] = max(cube_p[2] + GRASP_CENTER_ABOVE_CUBE, center_floor_z)
+        target = ee_for_center(center_tgt)
         q_new, ok = solve_track(target, q_seed)
         if ok: q_seed = step_toward(q_seed, q_new)
         command_arm(q_seed); command_gripper(GRIPPER_CLOSED_Q7); await next_frame()
@@ -723,13 +793,13 @@ async def moving_pick_place():
         q0 = as64(robot.get_joint_positions())[:6]
         await interp(command_arm, command_gripper, q0, ready_q, READY_MOVE_FRAMES, GRIPPER_OPEN_Q7)
         qg = read_gripper()
-        print("\n[NEXT] read the 'gripper after close' q7 above:")
-        print("   * q7 stalled > ~2 mm  -> fingers gripped but slipped:")
-        print("       raise FINGER_MAX_FORCE, or nudge GRASP_TIP_ABOVE_BELT (higher")
-        print("       if fingers sat high on the cube; lower if the cube slipped under)")
+        print("\n[NEXT] read the 'gripper after close' q7 above vs the [3b] calibration:")
         print("   * q7 near 0 (~%.1f mm now) -> fingers closed with NO preload:" % (qg[0]*1000))
-        print("       the cube is still too small for the aperture — raise")
-        print("       CUBE_TARGET_SIZE (e.g. 0.028) and re-run")
+        print("       cube still too small for the jaws — raise CUBE_TARGET_SIZE")
+        print("       toward the calibrated range (e.g. 0.065, 0.070) and re-run")
+        print("   * q7 stalled > ~2 mm -> gripped but slipped: raise FINGER_MAX_FORCE,")
+        print("       or nudge GRASP_CENTER_ABOVE_CUBE a few mm so the jaws sit")
+        print("       higher/lower on the cube")
         return
     print("    grasp CONFIRMED (cube is being carried).")
 
@@ -737,19 +807,21 @@ async def moving_pick_place():
     print("\n[10] TRANSFER to pedestal")
     carry_z = max(cube_z0 + CARRY_HEIGHT, clear_z + 0.05)
 
-    def solve_key(pos, warm, label):
+    # solve_key targets a GRASP-CENTER (cube) position; converts to the EE
+    def solve_key(center, warm, label):
+        pos = ee_for_center(center)
         q, ok = solve(pos, R_grasp, warm)
         if not ok:
             q, ok = solve(pos, None, warm)
         if not ok:
-            print("    [WARN] IK failed for %s at %s" % (label, np.round(pos, 3)))
+            print("    [WARN] IK failed for %s at %s" % (label, np.round(center, 3)))
             return warm, False
         return q, True
 
-    ee_p, _ = ee_prim.get_world_pose(); ee_p = as64(ee_p)
-    q_up,   _ = solve_key(np.array([ee_p[0], ee_p[1], carry_z]), q_seed, "lift-high")
+    cur_center = center_from_ee(as64(ee_prim.get_world_pose()[0]))
+    q_up,   _ = solve_key(np.array([cur_center[0], cur_center[1], carry_z]), q_seed, "lift-high")
     q_over, _ = solve_key(np.array([place_pos[0], place_pos[1], carry_z]), q_up, "over-pedestal")
-    q_place, _ = solve_key(place_pos, q_over, "place")
+    q_place, _ = solve_key(place_pos, q_over, "place")   # cube center -> place_pos
 
     await interp(command_arm, command_gripper, q_seed, q_up,   TRANSFER_FRAMES // 2, GRIPPER_CLOSED_Q7)
     await interp(command_arm, command_gripper, q_up,   q_over, TRANSFER_FRAMES,      GRIPPER_CLOSED_Q7)
