@@ -88,6 +88,18 @@ OBJECT_MASS     = 0.15             # kg (heavier -> the belt's friction kick can
                                    #     spin/tip it; trivially liftable at Fmax=28 N)
 CUBE_PATH = OBJECT_PATH if OBJECT_SHAPE == "cylinder" else ORIG_CUBE_PATH
 
+# ---- Pull the grasp lane INWARD (reach-equivalent to moving the robot closer)
+#   The scene's cube lane sits ~0.44 m out in Y from the base -- right at the
+#   arm's TOP-DOWN reach limit, so the grasp strains and the wrist ends up at
+#   the near rail.  Moving the robot's articulation base is risky (fights the
+#   root fixed-joint) and would also disturb the WORKING place side, so instead
+#   we spawn the cylinder in a lane closer to the base: no further out than
+#   TARGET_LANE_REACH_Y.  This only pulls inward, never outward, and keeps the
+#   object well on the belt (past the near rail).  Set PULL_LANE_INWARD=False to
+#   keep the scene lane and instead physically move the robot in the UI.
+PULL_LANE_INWARD    = True
+TARGET_LANE_REACH_Y = 0.30         # m  spawn the lane at most this far out in Y from the base
+
 # ---- Parameter sweep (RUN_MODE = "sweep") ----------------------------
 #   A STATIC grasp test on the pedestal (no belt) that grasps a cylinder and
 #   measures how much it lifts, across the grid below.  Fast + isolates the
@@ -491,6 +503,27 @@ def prepare_object(stage):
     except Exception:
         cx, cy, belt = 0.1815, 3.947, 1.7843
         print("[OBJECT] could not read scene cube; using default belt pose")
+    # Pull the lane INWARD toward the base if it sits past the comfortable
+    # top-down reach (reach-equivalent to moving the robot closer).  Only ever
+    # pulls inward, and never below the near rail + object radius (stays on belt).
+    if PULL_LANE_INWARD:
+        try:
+            b = SingleXFormPrim(prim_path=BASE_PATH, name="lane_base")
+            base_y = float(as64(b.get_world_pose()[0])[1])
+            cy_in = base_y + TARGET_LANE_REACH_Y
+            try:
+                cdims, cctr, _ = world_bbox(CONVEYOR_PATH)
+                near_rail_y = float(cctr[1] - cdims[1] / 2.0)
+            except Exception:
+                near_rail_y = base_y + 0.13
+            floor_y = near_rail_y + OBJECT_DIAMETER / 2.0 + 0.02   # keep on the belt
+            cy_new = max(min(cy, cy_in), floor_y)
+            if abs(cy_new - cy) > 1e-4:
+                print("[OBJECT] pulling lane inward: Y %.3f -> %.3f (base+%.2f, was %.0f mm out)"
+                      % (cy, cy_new, TARGET_LANE_REACH_Y, (cy - base_y) * 1000))
+            cy = cy_new
+        except Exception as exc:
+            print("[OBJECT] lane-inward skipped (%s)" % exc)
     orig = stage.GetPrimAtPath(ORIG_CUBE_PATH)
     if orig.IsValid():
         orig.SetActive(False)                       # remove the cube from the sim

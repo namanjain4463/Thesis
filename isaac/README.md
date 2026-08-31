@@ -127,6 +127,7 @@ STOP -> configure gripper -> PLAY
 | `VEL_SMOOTH` | cube-velocity EMA weight for the feed-forward | raise if the feed-forward is noisy; lower if it lags a speed change |
 | `FINGER_MAX_FORCE` | grip force cap (N) | lower to reduce object bounce on close; raise if it slips |
 | `QUICK_LIFT_FRAMES`/`QUICK_LIFT_HEIGHT` | gentle straight-up lift off the belt | more frames = gentler (less inertia bounce) |
+| `PULL_LANE_INWARD`/`TARGET_LANE_REACH_Y` | spawn the grasp lane no further than this far out in Y (reach-equivalent to moving the robot closer) | lower `TARGET_LANE_REACH_Y` if the grasp still strains; set the flag False to keep the scene lane |
 | `CAP_XY_TOL`, `CAP_RELV_TOL`, `REQUIRED_GOOD_FRAMES` | how strict the capture gate is | loosen if it hits the deadline; tighten if it closes off-center |
 | `CLOSE_FRAMES` | close speed | fewer = faster close = less cube travel during close |
 | `CUBE_RISE_GATE` | min rise to accept the grasp | — |
