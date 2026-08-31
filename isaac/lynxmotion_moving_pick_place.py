@@ -147,7 +147,7 @@ FINGER_TIP_LOCAL = {   # real STL tips (Lula spheres were ~20 mm short of these)
 # ---- Finger drive gains applied at startup (the real grasp fix) -------
 FINGER_DRIVE_STIFFNESS = 5.0e4     # N/m
 FINGER_DRIVE_DAMPING   = 8.0e2     # N/(m/s)
-FINGER_MAX_FORCE       = 40.0      # N  (grip force cap; raise if it slips)
+FINGER_MAX_FORCE       = 28.0      # N  (grip force cap; enough for the puck, less bounce)
 
 # ---- Contact friction (the main fix for a slipping grasp) -------------
 #   The default ~0.3 friction lets the small cube slip out of the 3-finger
@@ -185,7 +185,9 @@ TOPDOWN_YAW_STEP  = 15             # deg  granularity of the top-down yaw search
 #   chase far upstream -- that is what over-extended the arm before.
 TAU_CAPTURE    = 0.05              # s  aim this far ahead of the cube (velocity match)
 LEAD_X         = 0.020             # m  small +X lead early in approach, decays to 0
-MAX_JOINT_STEP = 0.060             # rad/frame command cap (rate limit -> smooth, no snap)
+MAX_JOINT_STEP = 0.035             # rad/frame command cap (smaller = smoother, less jitter)
+CMD_SMOOTH     = 0.55              # arm-command low-pass (0=none, higher=smoother/slower)
+VEL_SMOOTH     = 0.85             # cube-velocity EMA weight (higher = less noisy feed-forward)
 
 # ---- Zone geometry, RELATIVE to robot-base X (= intercept X) (m) ------
 APPROACH_START_OFFSET = -0.120     # begin descend + track when cube reaches here
@@ -374,6 +376,21 @@ def configure_gripper(stage):
             print(f"[GRIPPER]   {name}: drive set FAILED:", exc)
 
 
+def stabilize_physics(stage):
+    """TGS solver + stabilization on the physics scene -> steadier contacts,
+    less bounce/jitter. Best-effort."""
+    try:
+        sc = stage.GetPrimAtPath("/World/PhysicsScene")
+        if not sc.IsValid():
+            return
+        api = PhysxSchema.PhysxSceneAPI.Apply(sc)
+        api.CreateSolverTypeAttr().Set("TGS")
+        api.CreateEnableStabilizationAttr().Set(True)
+        print("[PHYSICS] TGS solver + stabilization enabled")
+    except Exception as exc:
+        print("[PHYSICS] scene tune skipped (%s)" % exc)
+
+
 def boost_friction(stage, mu):
     """Bind a high-friction physics material to the cube + fingers so the
     grasp doesn't slip (run while STOPPED). Best-effort."""
@@ -438,6 +455,16 @@ def make_cylinder(stage, path, diameter, height, pos, mass):
     UsdPhysics.CollisionAPI.Apply(prim)
     UsdPhysics.RigidBodyAPI.Apply(prim)
     UsdPhysics.MassAPI.Apply(prim).CreateMassAttr(float(mass))
+    # stability: damping + extra solver iterations so it doesn't bounce/jitter
+    try:
+        rb = PhysxSchema.PhysxRigidBodyAPI.Apply(prim)
+        rb.CreateLinearDampingAttr().Set(0.5)
+        rb.CreateAngularDampingAttr().Set(0.5)
+        rb.CreateSolverPositionIterationCountAttr().Set(32)
+        rb.CreateSolverVelocityIterationCountAttr().Set(4)
+        rb.CreateSleepThresholdAttr().Set(0.0)
+    except Exception:
+        pass
     return True
 
 
@@ -532,6 +559,7 @@ async def moving_pick_place():
             resize_cube(stage, CUBE_TARGET_SIZE)
     if FRICTION_BOOST:
         boost_friction(stage, GRIP_FRICTION)
+    stabilize_physics(stage)
     print("\n[1] starting simulation...")
     timeline.play(); await wait_frames(30)
 
@@ -583,8 +611,15 @@ async def moving_pick_place():
         rail_top_z = cube_z0 - float(cube_dims[2]) / 2.0
         conv_min_y, conv_max_y = lane_y - 0.2, lane_y + 0.9
         conv_min_x, conv_max_x = -2.0, 2.5
-    clear_z = rail_top_z + RAIL_CLEAR_MARGIN
-    print("    conveyor rail-top Z: %.4f  -> travel/clear Z: %.4f" % (rail_top_z, clear_z))
+    # The conveyor bbox top (rail_top_z) includes the tall belt superstructure
+    # (~2.3 m), which is well beyond the 550 mm arm's reach.  Straining the EE
+    # toward it made the IK fail and over-yank the arm (the 100+ mm over-lift and
+    # the bounce).  Cap every "clear" height to a KNOWN-reachable ceiling: a lift
+    # of ~READY_HEIGHT above the belt (the READY pose already sits there).
+    reach_ceiling_z = cube_z0 + READY_HEIGHT + 0.02
+    clear_z = min(rail_top_z + RAIL_CLEAR_MARGIN, reach_ceiling_z)
+    print("    conveyor rail-top Z: %.4f  reach ceiling: %.4f  -> travel/clear Z: %.4f"
+          % (rail_top_z, reach_ceiling_z, clear_z))
     print("    conveyor Y band: [%.3f, %.3f]  near rail ~%.3f"
           % (conv_min_y, conv_max_y, conv_min_y))
 
@@ -611,6 +646,21 @@ async def moving_pick_place():
     def command_arm(q):
         robot.apply_action(ArticulationAction(
             joint_positions=np.asarray(q, dtype=np.float32), joint_indices=ARM_INDICES))
+
+    # low-pass filtered arm command: the per-frame IK solution can wobble
+    # frame-to-frame (redundant DOF), which shows up as gripper JITTER.  An EMA
+    # on the commanded joints (init to the current seed, no start-up jump) makes
+    # the wrist glide instead of buzz.  Only used in the per-frame tracking
+    # loops; the joint-space transfers are already smooth via interp().
+    _q_cmd = [None]
+    def command_arm_smooth(q_target, reset=False):
+        q_target = as64(q_target)
+        if reset or _q_cmd[0] is None:
+            _q_cmd[0] = q_target.copy()
+        else:
+            _q_cmd[0] = CMD_SMOOTH * _q_cmd[0] + (1.0 - CMD_SMOOTH) * q_target
+        command_arm(_q_cmd[0])
+        return _q_cmd[0]
 
     def command_gripper(q7):
         robot.apply_action(ArticulationAction(
@@ -830,7 +880,7 @@ async def moving_pick_place():
                   % ((cube_x_max - cube_x) * 1000))
         cube_x_max = max(cube_x_max, cube_x)
         now = time.monotonic(); dt = max(now - prev_t, 1e-3)
-        v_cube = 0.7*v_cube + 0.3*((cube_p - prev_cube)/dt)
+        v_cube = VEL_SMOOTH*v_cube + (1-VEL_SMOOTH)*((cube_p - prev_cube)/dt)
         prev_cube, prev_t = cube_p.copy(), now
 
         # descend the GRASP CENTER from hover height to the cube center as
@@ -854,12 +904,12 @@ async def moving_pick_place():
             q_seed = step_toward(q_seed, q_new); ik_fails = 0
         else:
             ik_fails += 1
-        command_arm(q_seed); command_gripper(GRIPPER_OPEN_Q7)
+        command_arm_smooth(q_seed); command_gripper(GRIPPER_OPEN_Q7)
         await next_frame()
         collision_check("approach")
 
         ee_p, _ = ee_prim.get_world_pose(); ee_p = as64(ee_p)
-        v_ee = 0.7*v_ee + 0.3*((ee_p - prev_ee)/dt); prev_ee = ee_p.copy()
+        v_ee = VEL_SMOOTH*v_ee + (1-VEL_SMOOTH)*((ee_p - prev_ee)/dt); prev_ee = ee_p.copy()
         # error of the GRASP CENTER vs the cube center
         cur_center = center_from_ee(ee_p)
         desired_center = cube_p.copy(); desired_center[2] = cube_p[2] + GRASP_CENTER_ABOVE_CUBE
@@ -903,13 +953,13 @@ async def moving_pick_place():
     for _ in range(SETTLE_OPEN_FRAMES):
         cube_p, _ = cube_prim.get_world_pose(); cube_p = as64(cube_p)
         now = time.monotonic(); dt = max(now - prev_t, 1e-3)
-        v_cube = 0.7*v_cube + 0.3*((cube_p - prev_cube)/dt); prev_cube, prev_t = cube_p.copy(), now
+        v_cube = VEL_SMOOTH*v_cube + (1-VEL_SMOOTH)*((cube_p - prev_cube)/dt); prev_cube, prev_t = cube_p.copy(), now
         center_tgt = cube_p.copy()
         center_tgt[0] += v_cube[0]*TAU_CAPTURE; center_tgt[1] += v_cube[1]*TAU_CAPTURE
         center_tgt[2] = max(cube_p[2] + GRASP_CENTER_ABOVE_CUBE, center_floor_z)
         q_new, ok = solve_track(ee_for_center(center_tgt), q_seed)
         if ok: q_seed = step_toward(q_seed, q_new)
-        command_arm(q_seed); command_gripper(GRIPPER_OPEN_Q7)   # STILL OPEN
+        command_arm_smooth(q_seed); command_gripper(GRIPPER_OPEN_Q7)   # STILL OPEN
         await next_frame()
     print("    cube seated between OPEN fingers (q7=%.1f mm) — closing now"
           % (read_gripper()[0]*1000))
@@ -919,14 +969,14 @@ async def moving_pick_place():
     for f in range(CLOSE_FRAMES):
         cube_p, _ = cube_prim.get_world_pose(); cube_p = as64(cube_p)
         now = time.monotonic(); dt = max(now - prev_t, 1e-3)
-        v_cube = 0.7*v_cube + 0.3*((cube_p - prev_cube)/dt); prev_cube, prev_t = cube_p.copy(), now
+        v_cube = VEL_SMOOTH*v_cube + (1-VEL_SMOOTH)*((cube_p - prev_cube)/dt); prev_cube, prev_t = cube_p.copy(), now
         center_tgt = cube_p.copy()
         center_tgt[0] += v_cube[0]*TAU_CAPTURE; center_tgt[1] += v_cube[1]*TAU_CAPTURE
         center_tgt[2] = max(cube_p[2] + GRASP_CENTER_ABOVE_CUBE, center_floor_z)
         target = ee_for_center(center_tgt)
         q_new, ok = solve_track(target, q_seed)
         if ok: q_seed = step_toward(q_seed, q_new)
-        command_arm(q_seed)
+        command_arm_smooth(q_seed)
         a = smoothstep((f + 1) / CLOSE_FRAMES)
         command_gripper(GRIPPER_OPEN_Q7 + a*(GRIPPER_CLOSED_Q7 - GRIPPER_OPEN_Q7))
         await next_frame()
@@ -939,21 +989,25 @@ async def moving_pick_place():
         target = ee_for_center(center_tgt)
         q_new, ok = solve_track(target, q_seed)
         if ok: q_seed = step_toward(q_seed, q_new)
-        command_arm(q_seed); command_gripper(GRIPPER_CLOSED_Q7); await next_frame()
+        command_arm_smooth(q_seed); command_gripper(GRIPPER_CLOSED_Q7); await next_frame()
 
     print("    gripper after close:", np.round(read_gripper()*1000, 2), "mm")
 
-    # (j) QUICK LIFT (straight up, to clear the rail) + verify rise
+    # (j) QUICK LIFT (straight up) + verify rise.  A short, gentle lift to just
+    #     pull the object off the belt -- NOT a strain up to the tall conveyor
+    #     bbox top (that over-yanked the arm and bounced the object).  The top-
+    #     down grasp keeps the wrist in the lane past the near rail, so a small
+    #     vertical lift needs no rail clearance here.
     print("\n[9] QUICK LIFT")
     ee_p, _ = ee_prim.get_world_pose(); ee_p = as64(ee_p)
     lift_start = ee_p.copy()
     lift_end = lift_start.copy()
-    lift_end[2] = max(lift_start[2] + QUICK_LIFT_HEIGHT, clear_z)
+    lift_end[2] = lift_start[2] + QUICK_LIFT_HEIGHT
     for f in range(QUICK_LIFT_FRAMES):
         a = smoothstep((f + 1) / QUICK_LIFT_FRAMES)
         q_new, ok = solve_track(lift_start + a*(lift_end - lift_start), q_seed)
         if ok: q_seed = step_toward(q_seed, q_new)
-        command_arm(q_seed); command_gripper(GRIPPER_CLOSED_Q7); await next_frame()
+        command_arm_smooth(q_seed); command_gripper(GRIPPER_CLOSED_Q7); await next_frame()
 
     cube_p, _ = cube_prim.get_world_pose(); cube_p = as64(cube_p)
     rise = float(cube_p[2] - cube_z0)
@@ -976,7 +1030,11 @@ async def moving_pick_place():
 
     # (k) TRANSFER up-and-over (joint-space, solved once), all above rail tops
     print("\n[10] TRANSFER to pedestal")
-    carry_z = max(cube_z0 + CARRY_HEIGHT, clear_z + 0.05)
+    # keep the carry height reachable (see reach_ceiling_z above) but always
+    # above the place point so the final descent onto the pedestal is downward.
+    carry_z = max(min(cube_z0 + CARRY_HEIGHT, reach_ceiling_z), float(place_pos[2]) + 0.05)
+    print("    carry Z: %.4f  (reach ceiling %.4f, place Z %.4f)"
+          % (carry_z, reach_ceiling_z, float(place_pos[2])))
 
     # solve_key targets a GRASP-CENTER (cube) position; converts to the EE
     def solve_key(center, warm, label):
@@ -994,7 +1052,10 @@ async def moving_pick_place():
     q_over, _ = solve_key(np.array([place_pos[0], place_pos[1], carry_z]), q_up, "over-pedestal")
     q_place, _ = solve_key(place_pos, q_over, "place")   # cube center -> place_pos
 
-    await interp(command_arm, command_gripper, q_seed, q_up,   TRANSFER_FRAMES // 2, GRIPPER_CLOSED_Q7)
+    # start the transfer from the ACTUAL last commanded pose (the low-pass state
+    # lags q_seed a touch) so the hand-off from tracking to transfer has no tick
+    q_cmd_now = _q_cmd[0].copy() if _q_cmd[0] is not None else q_seed
+    await interp(command_arm, command_gripper, q_cmd_now, q_up, TRANSFER_FRAMES // 2, GRIPPER_CLOSED_Q7)
     await interp(command_arm, command_gripper, q_up,   q_over, TRANSFER_FRAMES,      GRIPPER_CLOSED_Q7)
     await interp(command_arm, command_gripper, q_over, q_place, PLACE_FRAMES,        GRIPPER_CLOSED_Q7)
 

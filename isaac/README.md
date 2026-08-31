@@ -123,6 +123,10 @@ STOP -> configure gripper -> PLAY
 | `APPROACH_START_OFFSET` | how far upstream the descend begins (relative to base X) | more negative = more time to align, but more reach |
 | `TAU_CAPTURE` / `LEAD_X` | velocity-match lead near grasp | raise `TAU_CAPTURE` slightly if the cube slides through the close |
 | `MAX_JOINT_STEP` | per-frame joint rate limit (anti-snap) | lower for gentler motion; raise if it lags the cube |
+| `CMD_SMOOTH` | low-pass on the arm command (kills gripper jitter) | raise toward 0.7 if the wrist still buzzes; lower if it lags |
+| `VEL_SMOOTH` | cube-velocity EMA weight for the feed-forward | raise if the feed-forward is noisy; lower if it lags a speed change |
+| `FINGER_MAX_FORCE` | grip force cap (N) | lower to reduce object bounce on close; raise if it slips |
+| `QUICK_LIFT_FRAMES`/`QUICK_LIFT_HEIGHT` | gentle straight-up lift off the belt | more frames = gentler (less inertia bounce) |
 | `CAP_XY_TOL`, `CAP_RELV_TOL`, `REQUIRED_GOOD_FRAMES` | how strict the capture gate is | loosen if it hits the deadline; tighten if it closes off-center |
 | `CLOSE_FRAMES` | close speed | fewer = faster close = less cube travel during close |
 | `CUBE_RISE_GATE` | min rise to accept the grasp | — |
@@ -164,3 +168,37 @@ small (raise `CUBE_TARGET_SIZE` toward the calibrated range); q7 **stalled >
 - `CAPTURE ALIGNED` — `exy`, `ez`, `relv` at the instant of closing.
 - `gripper after close` — did the fingers close symmetrically on the cube?
 - `cube rise after quick lift` — the single number that says grasp / no grasp.
+
+---
+
+## F. Motion quality — killing the bounce & the jitter
+
+The pick succeeded but the object bounced and the gripper buzzed. Both came
+from the same two root causes, now fixed:
+
+**1. Gripper jitter = frame-to-frame IK wobble.** Position IK on a 6-DOF arm
+has redundant DOF, so consecutive solves can pick slightly different joint
+branches — the rate limiter caps the *size* of each step but not its
+*direction*, so the wrist buzzes. Fix: a low-pass filter (`CMD_SMOOTH`) on the
+commanded joints in every per-frame tracking loop (approach / settle / close /
+hold / lift). The joint-space transfers already interpolate solved key-poses,
+so they stay untouched. `MAX_JOINT_STEP` was also lowered (0.060 → 0.035).
+
+**2. Object bounce = over-yank + hard contacts.** The quick-lift and the
+transfer were straining the EE toward the conveyor bbox top (~2.3 m — the tall
+belt superstructure, far past the arm's reach). The IK failed and the arm
+snapped upward, launching the object (the 100 mm+ over-lift). Fixes:
+- every "clear/carry" height is capped to a **known-reachable ceiling**
+  (~`READY_HEIGHT` above the belt); the quick-lift is now a short, gentle
+  straight-up pull off the belt (`QUICK_LIFT_HEIGHT`, no rail-clearance strain);
+- **physics stabilization** — TGS solver + stabilization on the scene, plus
+  linear/angular damping and extra solver iterations on the object, so contacts
+  settle instead of ringing;
+- **lower grip force** (`FINGER_MAX_FORCE` 40 → 28 N) and a smoothed velocity
+  feed-forward (`VEL_SMOOTH`) so the close doesn't punch the object.
+
+What to watch on the next run: the console now prints a `reach ceiling` and a
+`carry Z` line — both should be comfortably reachable (no `[WARN] IK failed for
+lift-high`), and the `cube rise after quick lift` should be ~80 mm (the lift
+height), not 100 mm+. If the wrist still buzzes, raise `CMD_SMOOTH` toward 0.7;
+if the object still hops on close, drop `FINGER_MAX_FORCE` a few N.
