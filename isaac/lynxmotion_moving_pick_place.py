@@ -812,10 +812,14 @@ async def moving_pick_place():
           % (GRASP_CENTER_ABOVE_CUBE*1000, center_floor_z))
 
     def solve_track(pos, seed):
-        q, ok = solve(pos, R_track, seed)
-        if not ok and R_track is not None:
-            q, ok = solve(pos, None, seed)          # reach fallback
-        return q, ok
+        # TOP-DOWN ONLY while tracking.  The old position-only fallback
+        # (solve(pos, None)) is what let the wrist contort toward the rail when
+        # the cube sat past the top-down reach envelope: it would reach the XY
+        # position with ANY orientation, flinging the elbow up and the wrist
+        # down into the near rail (the 70 collisions).  Now, if the near-vertical
+        # solve fails, we return ok=False so the caller HOLDS the last safe pose
+        # instead of diving after an unreachable point.
+        return solve(pos, R_track, seed)
 
     def step_toward(seed, q_new):
         d = q_new - seed
@@ -824,20 +828,26 @@ async def moving_pick_place():
             d = d * (MAX_JOINT_STEP / m)
         return seed + d
 
-    # collision monitor: warn if the wrist dips into the near-rail zone
+    # collision monitor: warn if the wrist dips into the near-rail zone.  The
+    # PHYSICAL side rail sits just above the belt -- NOT at the conveyor bbox top
+    # (2.31 m = the tall superstructure).  Using the bbox top flagged the wrist
+    # as "colliding" even when it was 0.4 m up in the air (the false 70 hits).
+    # Flag only when the wrist is actually LOW (within ~0.15 m of the belt) AND
+    # in the near-rail Y band.
     coll_warns = [0]
     near_lo, near_hi = conv_min_y - 0.03, conv_min_y + 0.10
+    rail_danger_z = belt_top_z + 0.15
     def collision_check(tag):
         if not COLLISION_MONITOR:
             return
         wp, _ = wrist_prim.get_world_pose(); wp = as64(wp)
         if (conv_min_x <= wp[0] <= conv_max_x and near_lo <= wp[1] <= near_hi
-                and wp[2] < rail_top_z + 0.005):
+                and wp[2] < rail_danger_z):
             coll_warns[0] += 1
             if coll_warns[0] <= 6 or coll_warns[0] % 10 == 0:
-                print("    [COLLISION] wrist in near-rail zone Y=%.3f Z=%.4f "
-                      "(rail top %.4f) [%s] #%d"
-                      % (wp[1], wp[2], rail_top_z, tag, coll_warns[0]))
+                print("    [COLLISION] wrist low in near-rail zone Y=%.3f Z=%.4f "
+                      "(belt top %.4f) [%s] #%d"
+                      % (wp[1], wp[2], belt_top_z, tag, coll_warns[0]))
 
     # (f) open + move to READY
     print("\n[5] opening gripper + moving to READY")
