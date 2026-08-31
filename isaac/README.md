@@ -60,13 +60,21 @@ frame. That is the snapping / branch-changing you saw.
   (lift-high → over-pedestal → down), each high above the belt and rails, so the
   arm goes up-and-over and the only intended contact is fingers ↔ cube.
 
-**On-the-fly capture (belt never stops)**
-- **Catch-up:** the EE aims *ahead* of the cube (`cube + v_cube*TAU_CATCHUP +
-  LEAD_X`), so it deliberately runs faster than the cube and closes the gap.
-- **Capture:** the lead shrinks to `TAU_CAPTURE`, so the EE **matches the cube's
-  velocity** — the close then happens as if the cube were standing still.
+**On-the-fly capture (belt never stops), sized to the arm's reach**
+- The cube lane is ~0.45 m out in Y — near the edge of the 550 mm arm's
+  workspace. So the arm does **not** chase the cube far upstream (that
+  over-extends it and the IK fails). Instead it **hovers over the lane at the
+  robot's own X** (the minimum-reach intercept) and lets the cube come to it.
+- **Match:** as the cube arrives it descends and aims slightly ahead
+  (`cube + v_cube*TAU_CAPTURE + LEAD_X`, lead decaying to 0), so the EE
+  **matches the cube's velocity** and the close happens as if the cube were
+  standing still.
 - Closes only after `REQUIRED_GOOD_FRAMES` of small XY error **and** small
   relative EE↔cube velocity.
+- **Rate limiter (`MAX_JOINT_STEP`)** caps the per-frame joint change instead
+  of rejecting big jumps, so the arm is smooth *and* never freezes/aborts.
+- If the hover/intercept itself is unreachable, it aborts and tells you to move
+  the robot closer to the conveyor — the one thing a controller can't fix.
 
 **Never place a cube you didn't grasp**
 - After the quick lift it checks the **cube actually rose** (`CUBE_RISE_GATE`).
@@ -81,9 +89,10 @@ frame. That is the snapping / branch-changing you saw.
 STOP -> configure gripper -> PLAY
   -> GRIPPER SELF-TEST (abort if asymmetric)
   -> READY (fixed known-good pose)
-  -> WAIT for cube to reach track zone
-  -> CATCH-UP     (v_ee > v_cube; descend from TRACK_HEIGHT)
-  -> CAPTURE      (v_ee -> v_cube; align in XY, low relative speed)
+  -> HOVER over the lane at the robot's X   (best-reach intercept)
+  -> WAIT for cube to reach the approach zone
+  -> APPROACH     (descend + track + match cube velocity)
+  -> CAPTURE      (align in XY, low relative speed, near intercept X)
   -> CLOSE        (close 3 fingers while still tracking cube)
   -> QUICK LIFT   (verify cube rose;  fail -> open, return, STOP)
   -> TRANSFER     (up -> over pedestal, joint-space, solved once)
@@ -97,14 +106,22 @@ STOP -> configure gripper -> PLAY
 | Constant | Meaning | If it misses |
 |---|---|---|
 | `GRASP_Z_BIAS` | final TCP Z at grasp (`pro_arm_ee` isn't exactly the finger center) | sweep ±few mm if fingers sit high/low on the cube |
+| `HOVER_HEIGHT` | how high the EE waits above the lane at the intercept | lower a bit if the descend is too rushed |
 | `FINGER_MAX_FORCE` | grip force cap (N) | raise if the cube slips; lower if it gets ejected |
 | `FINGER_DRIVE_STIFFNESS`/`DAMPING` | finger position-drive gains | raise stiffness if fingers don't hold their target |
-| `TAU_CATCHUP` / `LEAD_X` | how aggressively the EE outruns the cube | raise if it never catches up; lower if it overshoots |
-| `TAU_CAPTURE` | velocity-match lead near grasp | raise slightly if the cube slides through the close |
+| `APPROACH_START_OFFSET` | how far upstream the descend begins (relative to base X) | more negative = more time to align, but more reach |
+| `TAU_CAPTURE` / `LEAD_X` | velocity-match lead near grasp | raise `TAU_CAPTURE` slightly if the cube slides through the close |
+| `MAX_JOINT_STEP` | per-frame joint rate limit (anti-snap) | lower for gentler motion; raise if it lags the cube |
 | `CAP_XY_TOL`, `CAP_RELV_TOL`, `REQUIRED_GOOD_FRAMES` | how strict the capture gate is | loosen if it hits the deadline; tighten if it closes off-center |
 | `CLOSE_FRAMES` | close speed | fewer = faster close = less cube travel during close |
 | `CUBE_RISE_GATE` | min rise to accept the grasp | — |
 | paths + `READY_Q_DEG` | scene paths and READY branch | edit if your scene/paths differ |
+
+**Reach note:** the pick is near the arm's outer workspace. If the log shows
+`cannot reach the hover/intercept pose` or repeated IK failures during
+approach, the fix is physical, not a parameter: move the robot ~5–10 cm closer
+to the conveyor (or the conveyor toward the robot) so the cube lane sits well
+inside reach, then re-run.
 
 **Cube size:** you approved bumping to ~25 mm if a centered 20 mm close bottoms
 out with no preload. If the self-test passes but the cube still slips on a
