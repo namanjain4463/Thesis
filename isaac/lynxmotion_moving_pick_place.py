@@ -33,7 +33,7 @@ import omni.kit.app
 import omni.timeline
 import omni.usd
 
-from pxr import Usd, UsdGeom, UsdPhysics, PhysxSchema, Gf
+from pxr import Usd, UsdGeom, UsdPhysics, PhysxSchema, Gf, UsdShade, Sdf
 
 from isaacsim.core.prims import SingleArticulation, SingleXFormPrim
 from isaacsim.core.utils.types import ArticulationAction
@@ -116,7 +116,13 @@ FINGER_TIP_LOCAL = {   # real STL tips (Lula spheres were ~20 mm short of these)
 # ---- Finger drive gains applied at startup (the real grasp fix) -------
 FINGER_DRIVE_STIFFNESS = 5.0e4     # N/m
 FINGER_DRIVE_DAMPING   = 8.0e2     # N/(m/s)
-FINGER_MAX_FORCE       = 20.0      # N  (grip force cap; raise if it slips)
+FINGER_MAX_FORCE       = 40.0      # N  (grip force cap; raise if it slips)
+
+# ---- Contact friction (the main fix for a slipping grasp) -------------
+#   The default ~0.3 friction lets the small cube slip out of the 3-finger
+#   corner grip.  Boost the cube + finger contact friction at startup.
+FRICTION_BOOST   = True
+GRIP_FRICTION    = 1.3             # static = dynamic friction for cube & fingers
 
 # ---- Heights (m) ------------------------------------------------------
 READY_HEIGHT = 0.220               # EE above cube at READY
@@ -164,11 +170,11 @@ REQUIRED_GOOD_FRAMES = 4
 # ---- Closing ----------------------------------------------------------
 SETTLE_OPEN_FRAMES = 12            # hold OPEN around the centered cube before closing
 CLOSE_FRAMES    = 18
-POST_CLOSE_HOLD = 12
+POST_CLOSE_HOLD = 25               # hold the close longer so the grip settles
 
 # ---- Quick lift + success gate ---------------------------------------
 QUICK_LIFT_HEIGHT = 0.080
-QUICK_LIFT_FRAMES = 45
+QUICK_LIFT_FRAMES = 90             # slower lift so inertia doesn't break the grip
 CUBE_RISE_GATE    = 0.015
 FINAL_RISE_GATE   = 0.040
 
@@ -337,6 +343,36 @@ def configure_gripper(stage):
             print(f"[GRIPPER]   {name}: drive set FAILED:", exc)
 
 
+def boost_friction(stage, mu):
+    """Bind a high-friction physics material to the cube + fingers so the
+    grasp doesn't slip (run while STOPPED). Best-effort."""
+    try:
+        mat_path = "/World/GripHighFriction"
+        if not stage.GetPrimAtPath(mat_path).IsValid():
+            mat = UsdShade.Material.Define(stage, mat_path)
+            api = UsdPhysics.MaterialAPI.Apply(mat.GetPrim())
+            api.CreateStaticFrictionAttr().Set(float(mu))
+            api.CreateDynamicFrictionAttr().Set(float(mu))
+            api.CreateRestitutionAttr().Set(0.0)
+        mat = UsdShade.Material(stage.GetPrimAtPath(mat_path))
+        targets = [CUBE_PATH, "/World/Lynxmotion/finger_1",
+                   "/World/Lynxmotion/finger_2", "/World/Lynxmotion/finger_3"]
+        done = []
+        for p in targets:
+            prim = stage.GetPrimAtPath(p)
+            if not prim.IsValid():
+                continue
+            UsdShade.MaterialBindingAPI.Apply(prim)
+            UsdShade.MaterialBindingAPI(prim).Bind(
+                mat, bindingStrength=UsdShade.Tokens.strongerThanDescendants,
+                materialPurpose="physics")
+            done.append(prim.GetName())
+        print("[FRICTION] mu=%.1f bound to: %s" % (mu, done))
+    except Exception as exc:
+        print("[FRICTION] failed (%s) — grasp may still slip; can raise "
+              "friction in the USD instead." % exc)
+
+
 # ======================================================================
 # 4. GEOMETRY
 # ======================================================================
@@ -412,6 +448,8 @@ async def moving_pick_place():
     configure_gripper(stage)
     if CUBE_TARGET_SIZE is not None:
         resize_cube(stage, CUBE_TARGET_SIZE)
+    if FRICTION_BOOST:
+        boost_friction(stage, GRIP_FRICTION)
     print("\n[1] starting simulation...")
     timeline.play(); await wait_frames(30)
 
@@ -836,12 +874,11 @@ async def moving_pick_place():
         await interp(command_arm, command_gripper, q0, ready_q, READY_MOVE_FRAMES, GRIPPER_OPEN_Q7)
         qg = read_gripper()
         print("\n[NEXT] read the 'gripper after close' q7 above vs the [3b] calibration:")
-        print("   * q7 near 0 (~%.1f mm now) -> fingers closed with NO preload:" % (qg[0]*1000))
-        print("       cube still too small for the jaws — raise CUBE_TARGET_SIZE")
-        print("       toward the calibrated range (e.g. 0.065, 0.070) and re-run")
-        print("   * q7 stalled > ~2 mm -> gripped but slipped: raise FINGER_MAX_FORCE,")
-        print("       or nudge GRASP_CENTER_ABOVE_CUBE a few mm so the jaws sit")
-        print("       higher/lower on the cube")
+        print("   * q7 stalled > ~3 mm (~%.1f mm now) -> gripped but SLIPPED:" % (qg[0]*1000))
+        print("       raise GRIP_FRICTION (e.g. 1.6) and/or FINGER_MAX_FORCE; try a")
+        print("       slightly larger cube (0.022) for a broader contact")
+        print("   * q7 near 0 -> no contact: lower CUBE_TARGET_SIZE (fingers over-closed)")
+        print("       or nudge GRASP_CENTER_ABOVE_CUBE so the jaws sit on the cube body")
         return
     print("    grasp CONFIRMED (cube is being carried).")
 
