@@ -77,10 +77,14 @@ FINGER_JOINT_NAMES = ["joint_7", "joint_8", "joint_9"]  # 7 = master
 READY_Q_DEG = [-75.455, -36.334, 11.833, 3.131, 84.152, -97.696]
 
 # ---- Gripper aperture (joint_7 stroke 0 .. +0.010 m) -----------------
-#   OPEN  : q7 = +0.010 -> q8 = q9 = -0.010
-#   CLOSED: q7 =  0.000 -> q8 = q9 =  0.000
-GRIPPER_OPEN_Q7   = 0.010
-GRIPPER_CLOSED_Q7 = 0.000
+#   VERIFIED from the URDF + live calibration that the direction is the
+#   OPPOSITE of what earlier notes assumed:
+#     q7 = 0.000 -> fingertips ~37 mm from center = WIDE  (OPEN)
+#     q7 = 0.010 -> fingertips ~27 mm from center = NARROW (CLOSED / clamps)
+#   With it backwards, "open" narrowed the jaws (blocking the descent) and
+#   "close" spread them (never gripping).  This is the corrected mapping.
+GRIPPER_OPEN_Q7   = 0.000          # wide  -> clears the cube on the way down
+GRIPPER_CLOSED_Q7 = 0.010          # narrow -> clamps the cube
 
 # ---- Cube size --------------------------------------------------------
 #   This CGE-10-10 is a LARGE 3-jaw gripper: even fully closed the fingertips
@@ -521,8 +525,9 @@ async def moving_pick_place():
 
     def symmetric(q, tol=0.0015):
         return abs(q[1]+q[0]) < tol and abs(q[2]+q[0]) < tol
-    if not (symmetric(q_open) and q_open[0] > 0.006 and
-            symmetric(q_closed) and q_closed[0] < 0.004):
+    # OPEN command -> q7 ~ 0 (wide); CLOSED command -> q7 ~ 10 mm (narrow)
+    if not (symmetric(q_open) and q_open[0] < 0.004 and
+            symmetric(q_closed) and q_closed[0] > 0.006):
         print("\n[ABORT] gripper not symmetric — remove the Physx Mimic Joint API")
         print("        from joint_8 & joint_9 in the USD, save, stop, re-run.")
         return
