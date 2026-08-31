@@ -87,11 +87,12 @@ GRIPPER_CLOSED_Q7 = 0.000
 #   sit ~37 mm from the grasp center (measured from the URDF + Lula collision
 #   spheres).  A 20-25 mm cube is far too small -- the fingers close through
 #   empty air and never clamp it (every "no rise" run).  The gripper needs an
-#   object ~75-88 mm across (the fingers only travel ~7 mm radially, so the
-#   grip band is narrow).  The startup calibration (below) prints the measured
-#   range; 80 mm sits in the middle of it.  Tune from the q7-stall/rise.
-#   Set to None to leave your cube untouched and resize it yourself.
-CUBE_TARGET_SIZE = 0.080           # m  (None = don't touch the cube)
+#   The DH CGE-10-10 spec grips ~20-60 mm objects (the fingers grip along
+#   their inner faces, not just the tips, so the effective range is smaller
+#   than a fingertip-only estimate).  45 mm sits mid-range.  The startup
+#   calibration prints the measured fingertip spread for reference; tune the
+#   size from the q7-stall/rise.  Set to None to keep your cube as-is.
+CUBE_TARGET_SIZE = 0.045           # m  (None = don't touch the cube)
 
 # ---- Gripper finger geometry (for calibration) -----------------------
 #   Fingertip offsets in each finger's LOCAL frame, from the Lula collision
@@ -156,6 +157,7 @@ CAP_RELV_TOL = 0.035               # m/s  relative EE-cube speed
 REQUIRED_GOOD_FRAMES = 4
 
 # ---- Closing ----------------------------------------------------------
+SETTLE_OPEN_FRAMES = 12            # hold OPEN around the centered cube before closing
 CLOSE_FRAMES    = 18
 POST_CLOSE_HOLD = 12
 
@@ -538,19 +540,21 @@ async def moving_pick_place():
     r_lo, r_hi = float(r_closed.min()), float(r_open.max())
     # graspable object half-width is roughly between the closed and open finger
     # radii; report both a face-on and corner-on cube size
+    open_gap = 2 * float(r_open.max())     # max object that fits between open fingers
     print("\n[3b] APERTURE CALIBRATION (measured from the live gripper)")
     print("    fingertip radius from grasp-center: closed ~%.0f mm, open ~%.0f mm"
           % (r_closed.mean()*1000, r_open.mean()*1000))
     print("    grasp-center is %.1f mm from pro_arm_ee (const uses %.1f mm)"
           % (gc_from_ee*1000, GRASP_CENTER_FROM_EE*1000))
-    print("    -> graspable cube ~%.0f-%.0f mm face-on (or ~%.0f-%.0f mm corner-on)"
-          % (2*r_lo*1000, 2*r_hi*1000, 2*r_lo/np.sqrt(2)*1000, 2*r_hi/np.sqrt(2)*1000))
+    print("    max object that fits between OPEN fingers: ~%.0f mm" % (open_gap*1000))
+    print("    (DH CGE-10-10 spec grips ~20-60 mm; grip is on the finger inner faces)")
     tgt = (CUBE_TARGET_SIZE if CUBE_TARGET_SIZE else float(np.mean(cube_dims)))
-    if not (2*r_lo/np.sqrt(2) <= tgt <= 2*r_hi):
-        print("    [WARN] cube %.0f mm is OUTSIDE the graspable range — expect no grip."
-              % (tgt*1000))
+    if tgt > open_gap:
+        print("    [WARN] cube %.0f mm is too big to enter the OPEN gripper (~%.0f mm)."
+              % (tgt*1000, open_gap*1000))
     else:
-        print("    cube %.0f mm is within the graspable range." % (tgt*1000))
+        print("    cube %.0f mm fits in the open gripper; grip depends on the close."
+              % (tgt*1000))
 
     # (e) TOP-DOWN grasp orientation (wrist rides ABOVE the cube -> clears the
     #     near rail) + grasp geometry + tracking helpers + collision monitor
@@ -718,14 +722,16 @@ async def moving_pick_place():
 
         if frame % 6 == 0:
             print(f"    x={cube_x:.3f} c_off={c_off*1000:+5.1f}mm exy={exy*1000:5.1f} "
-                  f"ez={ez*1000:+5.1f}mm vcx={v_cube[0]:+.3f} vex={v_ee[0]:+.3f} "
-                  f"relv={relv*1000:5.1f}mm/s good={good}")
+                  f"ez={ez*1000:+5.1f}mm relv={relv*1000:5.1f}mm/s "
+                  f"grip=OPEN(q7={read_gripper()[0]*1000:.1f}mm) good={good}")
 
         aligned = exy < CAP_XY_TOL and abs(ez) < CAP_Z_TOL and relv < CAP_RELV_TOL
         good = good + 1 if (cube_x >= capture_x and aligned) else 0
         if good >= REQUIRED_GOOD_FRAMES:
             print("\n    >>> CAPTURE ALIGNED  exy=%.1fmm ez=%.1fmm relv=%.1fmm/s"
                   % (exy*1000, ez*1000, relv*1000))
+            print("        (gripper held OPEN the whole approach: q7=%.1f mm)"
+                  % (read_gripper()[0]*1000))
             break
         if ik_fails > MAX_IK_FAILS:
             print("\n[ABORT] repeated IK failure — pick point may be out of reach.")
@@ -741,6 +747,24 @@ async def moving_pick_place():
                       % coll_warns[0])
             return
         frame += 1
+
+    # (h2) SETTLE the cube inside the OPEN fingers before closing — keep the
+    #      gripper fully OPEN and track the cube so it is definitely between
+    #      the jaws, then (and only then) close.
+    print("\n[7b] SETTLE (gripper OPEN around the centered cube)")
+    for _ in range(SETTLE_OPEN_FRAMES):
+        cube_p, _ = cube_prim.get_world_pose(); cube_p = as64(cube_p)
+        now = time.monotonic(); dt = max(now - prev_t, 1e-3)
+        v_cube = 0.7*v_cube + 0.3*((cube_p - prev_cube)/dt); prev_cube, prev_t = cube_p.copy(), now
+        center_tgt = cube_p.copy()
+        center_tgt[0] += v_cube[0]*TAU_CAPTURE; center_tgt[1] += v_cube[1]*TAU_CAPTURE
+        center_tgt[2] = max(cube_p[2] + GRASP_CENTER_ABOVE_CUBE, center_floor_z)
+        q_new, ok = solve_track(ee_for_center(center_tgt), q_seed)
+        if ok: q_seed = step_toward(q_seed, q_new)
+        command_arm(q_seed); command_gripper(GRIPPER_OPEN_Q7)   # STILL OPEN
+        await next_frame()
+    print("    cube seated between OPEN fingers (q7=%.1f mm) — closing now"
+          % (read_gripper()[0]*1000))
 
     # (i) CLOSE while tracking (velocity matched)
     print("\n[8] CLOSING (still tracking)")
