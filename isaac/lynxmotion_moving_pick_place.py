@@ -170,7 +170,12 @@ GRIP_FRICTION    = 1.3             # static = dynamic friction for cube & finger
 
 # ---- Heights (m) ------------------------------------------------------
 READY_HEIGHT = 0.220               # EE above cube at READY
-HOVER_HEIGHT = 0.060               # EE hovers this far above cube at the intercept
+#   HOVER must carry the DANGLING FINGERS *over* the conveyor's near side rail
+#   on the way in, then the arm descends straight down onto the cube (whose lane
+#   is well past the rail, so the descent is clear).  A low hover drags the
+#   fingers into the rail's side (the arm then jams there).  Keep it high --
+#   the code caps it to the arm's reach ceiling.
+HOVER_HEIGHT = 0.220               # EE hovers this far above cube at the intercept
 
 # The gripper's GRASP CENTER (where the 3 fingers converge) sits this far
 # from the pro_arm_ee frame, TOWARD the gripper along the approach axis
@@ -920,10 +925,14 @@ async def moving_pick_place():
     await interp(command_arm, command_gripper, q_now, ready_q, READY_MOVE_FRAMES,
                  GRIPPER_OPEN_Q7)
 
-    # (f2) move to HOVER over the intercept.  With a TOP-DOWN grasp the wrist
-    #      rides directly above the cube (at the lane, PAST the near rail), so
-    #      the gripper clears the rail at any height -- a moderate hover is fine.
-    hover_center = np.array([pick_x, lane_y, cube_z0 + HOVER_HEIGHT])
+    # (f2) move to HOVER *high* over the intercept.  READY and the hover are both
+    #      near the top of reach (same height), so the joint interp between them
+    #      keeps the gripper HIGH the whole way -- it crosses over the near side
+    #      rail instead of dragging the dangling fingers into it (the jam we saw
+    #      after the conveyor was moved 5 cm toward the robot).  The approach then
+    #      descends straight down onto the cube, whose lane is past the rail.
+    hover_z = min(cube_z0 + HOVER_HEIGHT, reach_ceiling_z - 0.01)
+    hover_center = np.array([pick_x, lane_y, hover_z])
     intercept = ee_for_center(hover_center)
     q_hover, ok = solve(intercept, R_track, ready_q)
     if not ok:
