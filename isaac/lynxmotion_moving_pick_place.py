@@ -694,9 +694,11 @@ async def moving_pick_place():
     solver = LulaKinematicsSolver(robot_description_path=ROBOT_DESCRIPTION, urdf_path=URDF)
     solver.set_robot_base_pose(base_pos, base_quat)
 
-    # J1-J6 limits: clamp EVERY commanded arm position to the URDF joint limits
-    # so we can never drive a joint past its stop, and count any clamp so the run
-    # report can confirm the limits were respected.
+    # J1-J6 limits: Lula's IK already keeps every solution inside the URDF joint
+    # limits, so we only VERIFY here (report, don't alter) -- a hard clamp risks
+    # truncating a perfectly valid reach if the limit table is off, which just
+    # yanks the arm short of the target.  lim_hits stays 0 in normal operation;
+    # a non-zero count in the report means a command genuinely exceeded a limit.
     try:
         _lo, _hi = solver.get_cspace_position_limits()
         q_lo, q_hi = as64(_lo), as64(_hi)
@@ -706,17 +708,19 @@ async def moving_pick_place():
     print("    J1-J6 limits (deg): lo=%s" % np.round(np.degrees(q_lo), 1))
     print("                        hi=%s" % np.round(np.degrees(q_hi), 1))
     lim_hits = [0]
-    def clamp_arm(q):
-        q = as64(q)
-        c = np.clip(q, q_lo, q_hi)
-        if np.any(np.abs(c - q) > 1e-6):
-            lim_hits[0] += 1
-        return c
-
     def command_arm(q):
+        q = as64(q)
+        over = np.clip(q, q_lo, q_hi) - q
+        if np.any(np.abs(over) > 1e-4):
+            lim_hits[0] += 1
+            if lim_hits[0] <= 3:
+                j = int(np.argmax(np.abs(over)))
+                print("    [LIMIT] J%d command %.1f deg outside [%.1f, %.1f] "
+                      "(not altered; Lula normally prevents this)"
+                      % (j + 1, np.degrees(q[j]),
+                         np.degrees(q_lo[j]), np.degrees(q_hi[j])))
         robot.apply_action(ArticulationAction(
-            joint_positions=np.asarray(clamp_arm(q), dtype=np.float32),
-            joint_indices=ARM_INDICES))
+            joint_positions=np.asarray(q, dtype=np.float32), joint_indices=ARM_INDICES))
 
     # low-pass filtered arm command: the per-frame IK solution can wobble
     # frame-to-frame (redundant DOF), which shows up as gripper JITTER.  An EMA
@@ -932,7 +936,33 @@ async def moving_pick_place():
     await interp(command_arm, command_gripper, ready_q, q_hover, HOVER_MOVE_FRAMES,
                  GRIPPER_OPEN_Q7)
     q_seed = q_hover.copy()
+    # DIAGNOSTIC: did the arm actually reach the hover, or is it stuck short?
+    #   * IK intends where?  -> FK(q_hover) EE position
+    #   * physics achieves where? -> live EE position
+    #   Comparing the two isolates the cause: FK far from target => IK never
+    #   solved; FK near target but physics short => the arm is physically BLOCKED
+    #   (e.g. the moved rail is in its path) or a joint limit truncated it.
+    ee_hov, _ = ee_prim.get_world_pose(); ee_hov = as64(ee_hov)
+    gc_hov = center_from_ee(ee_hov)
+    hov_err = float(np.linalg.norm(gc_hov[:2] - hover_center[:2]))
+    try:
+        fk_p, _ = solver.compute_forward_kinematics(EE_FRAME, q_hover)
+        fk_ctr = center_from_ee(as64(fk_p))
+        fk_err = float(np.linalg.norm(fk_ctr[:2] - hover_center[:2]))
+    except Exception:
+        fk_err = float("nan")
     print("\n[6] hovering at intercept — waiting for cube")
+    print("    hover target grasp-centre XY: [%.3f, %.3f]" % (hover_center[0], hover_center[1]))
+    print("    IK intends (FK) err=%.0f mm ; physics achieved [%.3f, %.3f] err=%.0f mm"
+          % (fk_err * 1000, gc_hov[0], gc_hov[1], hov_err * 1000))
+    if hov_err > 0.05:
+        if fk_err < 0.02:
+            print("    [WARN] IK reaches the lane but the ARM DOES NOT (physics %.0f mm"
+                  " short) -> physically BLOCKED (moved rail in the path) or a joint"
+                  " limit truncated it. See any [LIMIT] lines above." % (hov_err*1000))
+        else:
+            print("    [WARN] IK itself is %.0f mm short -> the lane is past the arm's"
+                  " reach; move the robot closer to the conveyor." % (fk_err*1000))
 
     cube_p, _ = cube_prim.get_world_pose()
     if float(as64(cube_p)[0]) >= capture_x:
@@ -1012,9 +1042,10 @@ async def moving_pick_place():
         last_exy = exy
 
         if frame % 6 == 0:
-            print(f"    x={cube_x:.3f} c_off={c_off*1000:+5.1f}mm exy={exy*1000:5.1f} "
-                  f"ez={ez*1000:+5.1f}mm relv={relv*1000:5.1f}mm/s "
-                  f"grip=OPEN(q7={read_gripper()[0]*1000:.1f}mm) good={good}")
+            print(f"    cube[{cube_p[0]:.3f},{cube_p[1]:.3f}] "
+                  f"ee_ctr[{cur_center[0]:.3f},{cur_center[1]:.3f}] "
+                  f"exy={exy*1000:5.1f} ez={ez*1000:+5.1f}mm "
+                  f"relv={relv*1000:5.1f}mm/s ik={'ok ' if ok else 'FAIL'} good={good}")
 
         aligned = exy < CAP_XY_TOL and abs(ez) < CAP_Z_TOL and relv < CAP_RELV_TOL
         good = good + 1 if (cube_x >= capture_x and aligned) else 0
