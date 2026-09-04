@@ -127,7 +127,7 @@ def _finger_geoms(m):
     return fg
 
 
-def run_grasp(params, save_render=False, on_step=None, verbose=False):
+def run_grasp(params, save_render=False, on_step=None, verbose=False, hoff=0.0):
     m = make_model(params)
     d = mujoco.MjData(m)
     set_home(m, d)
@@ -136,8 +136,9 @@ def run_grasp(params, save_render=False, on_step=None, verbose=False):
     obj_gid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "object")
     home_quat = np.array(d.xquat[hb]).copy()  # keep hand pointing down
     oz = PED_TOP + params["h"]/2 + 0.001
-    # main fingertip pad sits 0.075 below the hand; center it on the object mid-height
-    grasp_pos = np.array([OBJ_X, OBJ_Y, oz + 0.075])
+    # main fingertip pad sits 0.075 below the hand; center it on the object mid-height.
+    # hoff shifts the grasp up/down the cylinder to sample different surface heights.
+    grasp_pos = np.array([OBJ_X, OBJ_Y, oz + 0.075 + hoff])
     pre_pos   = grasp_pos + np.array([0, 0, 0.12])
 
     q_home = np.array(d.qpos).copy()

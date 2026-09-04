@@ -32,7 +32,8 @@ Validation (run any of these; each prints its own verdict)
 - `premises_final.py`     — the consolidated **pre-embodiment GATE** (prints GO/NO-GO).
 - `p2_frictionless.py`    — the exact contact-solve KKT in the clean frictionless case (`jar = R·f`, machine precision), confirming the local/global split against ground-truth physics.
 - `panda_zlocal_check.py` — proves the Panda emits **schema-identical** `z_local` (0 NaN on primitive grasp contacts).
-- `cross_embodiment_v2.py`— **headline**: exact port split `W = Y_object + Y_robot`, `Y_object` embodiment-invariance (to 1e-15) at matched geometry, and the transfer certificate on the two real arms.
+- `cross_embodiment_v2.py`— exact port split `W = Y_object + Y_robot`, `Y_object` embodiment-invariance (to 1e-15) at matched geometry, and the transfer certificate on the two real arms.
+- `surface_field_covering.py` — **new-math headline**: drops the matched-geometry assumption. Models the contact law as a **field on the object surface** and the embodiment as a **sampling measure**; the transfer certificate becomes a **surface-covering** condition `error ≤ ε + C·L·dist(ξ*, trained support)`. Validated on real contact supports from both arms: error `∝ L` (slope/L = 1.389 ± 0.0% over a 10× range), collapses to one universal law (R²=0.95), and the **covering distance predicts cross-embodiment transfer error (228×)**. `probe_supports.py` extracts the `(θ,z)` material-coordinate supports.
 
 Rendering / analysis
 - `panda_render.py`, `render_mujoco.py` — OSMesa 3D renders. `render_filmstrip.py` — side-view filmstrip. `analyze_batch.py` — batch outcome figure.
