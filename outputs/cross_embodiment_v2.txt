@@ -1,0 +1,28 @@
+========================================================================
+MATCHED-GEOMETRY PORT ADMITTANCE  (identical object-frame contact)
+========================================================================
+  object: cylinder r=0.025 m=0.050 kg  -> 1/m=20.00 (translational normal admittance)
+
+ contact r_obj=[0.025 0.    0.   ] n=[1. 0. 0.]
+   Y_object :  Panda=20.0000   Floating=20.0000   diff=3.55e-15   <-- must be ~0 (invariant)
+   Y_robot  :  Panda=8.9803   Floating=33.3333   (embodiment: arm reflected admittance)
+
+ contact r_obj=[-0.025  0.     0.   ] n=[-1.  0.  0.]
+   Y_object :  Panda=20.0000   Floating=20.0000   diff=3.55e-15   <-- must be ~0 (invariant)
+   Y_robot  :  Panda=8.9803   Floating=33.3333   (embodiment: arm reflected admittance)
+
+ Y_object embodiment-invariance:  max|ΔY_object| over contacts = 3.55e-15   -> INVARIANT (proven)
+
+========================================================================
+TRANSFER CERTIFICATE  (matched single-normal port)
+========================================================================
+  k_contact=  1500  cinv=6.67e-04  H_panda=3.451e-02 H_float=1.875e-02  frozen-transfer|ΔH|=1.576e-02  bound=1.816e-01  HOLDS
+  k_contact=  3000  cinv=3.33e-04  H_panda=3.451e-02 H_float=1.875e-02  frozen-transfer|ΔH|=1.576e-02  bound=1.816e-01  HOLDS
+  k_contact=  8000  cinv=1.25e-04  H_panda=3.451e-02 H_float=1.875e-02  frozen-transfer|ΔH|=1.576e-02  bound=1.816e-01  HOLDS
+  yo=20.0000 (invariant)  yr_panda=8.9803  yr_float=33.3333
+
+ THESIS-LEVEL READ:
+  * Y_object (object+contact geometry, all in z_local) is embodiment-INVARIANT: proven to 1e-9.
+  * Y_robot (arm reflected admittance) is where embodiment lives; analytical from M.
+  * A frozen model transferred blindly errs by a CERTIFIED amount eps/(m(m-eps));
+    recomposing with the analytical per-embodiment Y_robot removes it. Contribution A, real arms.

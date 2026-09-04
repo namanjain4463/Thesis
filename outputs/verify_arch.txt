@@ -1,0 +1,24 @@
+======================================================================
+2A  DOES ROBOT-MODEL ERROR MASQUERADE AS CONTACT FORCE?  (momentum obs)
+======================================================================
+  model error 0% -> phantom generalized force ||r|| = 0.000  (true contact = 0)
+  model error 2% -> phantom generalized force ||r|| = 0.080  (true contact = 0)
+  model error 5% -> phantom generalized force ||r|| = 0.200  (true contact = 0)
+  model error 10% -> phantom generalized force ||r|| = 0.399  (true contact = 0)
+  => r = (Mhat-M) qdd = dM*qdd. Model error is INDISTINGUISHABLE from contact
+     force. Worse: during training this leaks into C_theta -> C becomes
+     robot-specific -> BREAKS the invariance/transfer claim. (sim: dM=0, clean.)
+
+======================================================================
+2B  DOES sigma_min BLOW UP AT v=0 / SINGULAR CONTACT?  (compliance test)
+======================================================================
+  rigid contact:      sigma_min(W)          = 9.817e-08   (near 0 -> ill-posed)
+  compliant (R=   100): sigma_min(W+R)        = 1.000e+02   (bounded BELOW by R)
+  compliant (R=  1000): sigma_min(W+R)        = 1.000e+03   (bounded BELOW by R)
+  compliant (R= 10000): sigma_min(W+R)        = 1.000e+04   (bounded BELOW by R)
+  => the compliance/regularization we ALREADY use makes sigma_min(A) >= ~R,
+     so it does NOT blow up at v=0. The '2B trap' is defused BY the design.
+     Real residual issue is elsewhere: at contact MODE SWITCHES the active set
+     changes -> the GRADIENT d(lambda)/d(eta) jumps (a TRAINING-time issue),
+     and grazing/breaking contacts have genuinely small sigma_min -> the
+     certificate CORRECTLY reports low margin (that is it working, not failing).

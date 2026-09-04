@@ -1,0 +1,4 @@
+lambda* = [0.0993 0.108  0.     0.    ]  (active set: [0, 1] )
+grad implicit = [-0.000435 -0.000443  0.        0.      ]
+grad finite   = [-0.000435 -0.000443  0.        0.      ]
+max abs err   = 1.02e-12

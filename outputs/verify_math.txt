@@ -1,0 +1,37 @@
+========================================================================
+V1  PORT FACTORIZATION INVARIANCE  (frequency domain)
+========================================================================
+ test at several excitation frequencies w (s = j*w):
+   w        |H_A|        |H_B|      | (H_A^-1 - Y_A) - Y_c |   (H_B^-1 - Y_B) - Y_c |
+      1    20.01025     8.26214        7.76e-18               8.00e-18
+     10    21.01227    26.61041        2.17e-18               1.14e-17
+     50    25.88807    25.51703        3.47e-18               3.47e-18
+    200     7.34071     7.15813        2.78e-17               0.00e+00
+   1000     5.10692     5.10150        0.00e+00               2.86e-17
+  --> |H_e| (raw observed response) differs a lot across embodiments,
+      but H_e^-1 - Y_e recovers the SAME interface Y_c.  max err = 2.86e-17
+  VERDICT: the quotient is EXACT (this is the falsifiable pre-training test).
+
+========================================================================
+V2  INTERNAL-FORCE NULLSPACE  and  PROPRIOCEPTION
+========================================================================
+ object-observable net force  w = G f = 2.00  (blind to squeeze)
+ min-norm f consistent w/ object motion: [ 1. -1.]  (assumes ZERO squeeze -> WRONG)
+   f=[ 1. -1.]  ->  Gf=2.00 (same),  squeeze f1+f2=-0.00
+   f=[3. 1.]  ->  Gf=2.00 (same),  squeeze f1+f2=4.00
+   f=[6. 4.]  ->  Gf=2.00 (same),  squeeze f1+f2=10.00
+ slip margin (mu*min(f_n) - f_t) for squeeze=8 vs squeeze=16 at same object motion:
+   contacts f_n=[4, 4] -> margin=0.10 (holds)
+   contacts f_n=[8, 8] -> margin=1.70 (holds)
+ PROPRIOCEPTION test: does adding per-arm torque obs identify f uniquely?
+   object-only      rank=1  nullspace dim=1  -> internal force UNIDENTIFIABLE
+   object+proprio   rank=2  nullspace dim=0  -> f fully identifiable
+   object+1actuator rank=2  nullspace dim=0  -> ok
+
+========================================================================
+V3  TRANSFER CERTIFICATE  ||H_hat-H|| <= eps/(m(m-eps))
+========================================================================
+ stiff/well-conditioned  m=2.0  actual ||dH||=0.0073   bound=0.0128   OK
+ soft/near-singular     m=0.1   actual ||dH||=1.5340   bound=10.0000   OK
+ --> SAME contact-model error eps=0.05 -> outcome error ~20x larger on the
+     ill-conditioned embodiment. sigma_min(A) is the COMPUTABLE certificate.

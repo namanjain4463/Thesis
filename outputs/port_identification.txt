@@ -1,0 +1,43 @@
+======================================================================
+PART A  FREE-SPACE endpoint mobility ID  vs the TRUE (constrained) port
+======================================================================
+ FLOATING  nefc=0  ID vs TRUE port=2.65e-17   |  naive rigid-body J M⁻¹Jᵀ misses port by 0.0%
+ PANDA     nefc=1  ID vs TRUE port=4.70e-02   |  naive rigid-body J M⁻¹Jᵀ misses port by 94.1%
+ => free-space excitation recovers the TRUE endpoint port (incl. structural couplings
+    like the finger tendon) that the naive analytical model can miss. You IDENTIFY Y, not assume it.
+
+======================================================================
+PART B  Y/C non-identifiability from contact H; free-space Y resolves it
+======================================================================
+ observed H (force->rel.vel) fixes only  Y + C⁻¹ = H⁻¹  (3 eqns, 6 unknown matrices).
+  gauge family reproducing the SAME H (contact data cannot tell these apart):
+   Y'=0.5·Y_true -> ||H'−H||=3.3e-19   (implied C differs, but H identical => C UNIDENTIFIABLE)
+   Y'=1.0·Y_true -> ||H'−H||=3.3e-19   (implied C differs, but H identical => C UNIDENTIFIABLE)
+   Y'=1.5·Y_true -> ||H'−H||=3.3e-19   (implied C differs, but H identical => C UNIDENTIFIABLE)
+ free-space Y=Y_true -> C⁻¹ = H⁻¹ − Y : recovered ||C⁻¹−C⁻¹_true||=5.2e-14  (UNIQUE).
+ => without free-space, embodiment vs contact-law is a gauge freedom; free-space fixes it.
+
+======================================================================
+PART C  eps_Y = free-space port-ID error vs measurement noise
+======================================================================
+  noise    eps_Y=||Ŷ−Y||/||Y||   (median of 20 trials)
+      0%   2.646e-17
+      1%   1.259e-02
+      3%   3.777e-02
+     10%   1.259e-01
+  => eps_Y ~ linear in sensor noise; this is the identification budget the certificate must carry.
+
+======================================================================
+PART D  two-source transfer certificate (embodiment eps_Y + contact-law eps_C)
+======================================================================
+  m = σ_min(Y+C⁻¹) = 215.9
+  eps_Y  eps_C |  actual ||ΔH||   bound=(eps_Y+eps_C)/(m(m−Σ))   holds
+   0.0   2.0  |  1.9747e-05     4.3315e-05            OK
+   2.0   0.0  |  1.2834e-05     4.3315e-05            OK
+   2.0   2.0  |  2.0415e-05     8.7447e-05            OK
+   5.0   3.0  |  1.0252e-04     1.7826e-04            OK
+  => the two error sources ADD inside one certificate. On hardware eps_Y (port ID) and
+     eps_C (sim-to-real contact law) are BOTH budgeted; a stiff/well-conditioned interface
+     (large m) tolerates both, an ill-conditioned one amplifies both. This is the honest cert.
+
+wrote port_identification.png

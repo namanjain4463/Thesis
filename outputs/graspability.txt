@@ -1,0 +1,19 @@
+========================================================================================================
+object        (m,μ)                  |   γ_kin  γ_fric  γ_cond   both | lift[mm] | predict   actual   
+========================================================================================================
+cylinder      (0.05kg,μ=1.00) |  +0.009  +0.968  0.0000   True |   +136.5 | GRASP     GRASPED ✓
+sphere        (0.05kg,μ=1.00) |  +0.006  +0.970  0.0000   True |   +136.6 | GRASP     GRASPED ✓
+box           (0.05kg,μ=1.00) |  +0.012  +0.964  0.0000   True |   +138.0 | GRASP     GRASPED ✓
+ellipsoid     (0.05kg,μ=1.00) |  +0.008  +0.968  0.0001   True |   +137.3 | GRASP     GRASPED ✓
+heavy(firm)   (0.20kg,μ=1.00) |  +0.009  +0.873  0.0000   True |   +135.5 | GRASP     GRASPED ✓
+WIDE box      (0.05kg,μ=1.00) |  -0.026  +0.989  0.0000   True |     -1.0 | REJECT    failed  ✓
+slick+weak    (0.05kg,μ=0.05) |  +0.006  -0.032  0.0000   True |     -1.1 | REJECT    failed  ✓
+heavy+weak    (0.20kg,μ=0.25) |  +0.009  -0.077  0.0000   True |     -1.0 | REJECT    failed  ✓
+========================================================================================================
+reasons for predicted rejects:
+  WIDE box      -> too wide (kinematic reach) (μ_req=0.01 vs μ=1.00; note: too wide -> kinematic)
+  slick+weak    -> friction cone (μ<μ_req)  (μ_req=0.08 vs μ=0.05; note: slick + weak grip -> friction)
+  heavy+weak    -> friction cone (μ<μ_req)  (μ_req=0.33 vs μ=0.25; note: heavy + weak grip -> friction)
+
+CERTIFICATE ACCURACY vs actual lift: 100% (8/8)
+wrote graspability.png

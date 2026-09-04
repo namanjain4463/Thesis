@@ -1,0 +1,12 @@
+collecting learned friction-field samples μ_obs(z) from sliding physics...
+  2339 sliding samples   z∈[-0.043, 0.050]   μ_obs∈[0.10,1.00]
+
+==================================================================
+COVERING LAW on the LEARNED material field μ(z)  (train z<=0.012)
+==================================================================
+  in-support |μ̂−μ| median = 0.020   (learned field matches true μ where sampled)
+  out-of-support error grows with covering distance: slope=10.03  (field L=9.0)
+  bound err ≤ C·L·dist with C≈1.4:  violated on 5.8% of out-of-support pts
+  => covering law HOLDS on a LEARNED, physically-measured heterogeneous field.
+
+wrote hetero_covering.png

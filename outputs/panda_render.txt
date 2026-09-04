@@ -1,0 +1,1 @@
+wrote panda_grasp_strip.png  final obj_z=0.600 (start 0.491)

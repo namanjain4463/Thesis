@@ -293,6 +293,11 @@ adding a second; matched geometry first (clean invariance) before removing that 
 (covering law); and only then added the hardware-honesty layer (`ε_Y`). Each step is a
 falsification opportunity, not a demo.
 
+**Outputs (figures + raw numbers): [`outputs/RESULTS.md`](outputs/RESULTS.md).** Every
+figure and the verbatim console output of each experiment is collected there; regenerate
+any of them by running the matching script in `mujoco/`
+(`MUJOCO_GL=osmesa`, `MENAGERIE_DIR` set for the Panda).
+
 ---
 
 ## 6. Decision log (what we decided and why)

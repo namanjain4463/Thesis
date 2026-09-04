@@ -1,0 +1,10 @@
+======================================================================
+PRE-PANDA GATE  (Factorized Interaction World Model premises)
+======================================================================
+ P1 coupling identity   : residual median=3.8e-16 max=5.6e-08   -> PASS
+ P2 local/global split  : frictionless KKT resid=1.7e-15  weight err=2.9e-15 N -> PASS
+      (force IS non-local: Fn~[pen,vn] R²=0.06 on 342 friction samples — EXPECTED,
+       the coupling is exactly the analytical W-solve; local law inputs R,aref,μ ∈ z_local)
+ P3 model-error budget  : contamination 2%->1.5%  5%->4.0%  10%->8.0%  -> PASS
+----------------------------------------------------------------------
+ DECISION: GO — build the Panda embodiment (reuse contact_probe + z_local unchanged).
