@@ -69,16 +69,25 @@ def contact_obs(m, d, W, obj_gid, finger_gids, r_obj):
     return out
 
 
+# MATCHED object distribution across BOTH embodiments, so the transfer test isolates the
+# embodiment change (not a diameter/mass distribution shift). Ranges both arms can grasp.
+def sample_object(rng):
+    return dict(d=float(rng.uniform(0.030, 0.050)),
+                h=float(rng.uniform(0.060, 0.090)),
+                mass=float(rng.uniform(0.030, 0.080)))
+
+
 def collect_float(n_per_mat, rng):
     rows = []                                   # (feat.., Fn, mat_id, trial_id)
     tid = 0
     for mid, sref in enumerate(MATERIALS):
         for _ in range(n_per_mat):
-            p = FG.random_params(rng)
-            p["mu"] = MU_FIXED; p["solref_t"] = sref
+            o = sample_object(rng)
+            p = dict(o, mu=MU_FIXED, solref_t=sref,
+                     force=float(10 ** rng.uniform(np.log10(3.0), np.log10(30.0))),
+                     zoff=float(rng.uniform(-0.005, 0.015)), xoff=float(rng.uniform(-0.010, 0.010)))
             r_obj = p["d"] / 2.0
             store = {"tid": tid}
-            lg = None
             def on_step(m, d, W, obj_bid, obj_gid, tgt, _r=r_obj, _mid=mid, _st=store):
                 fg = {mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, g) for g in ("lfinger", "rfinger")}
                 for feat, Fn in contact_obs(m, d, W, obj_gid, fg, _r):
@@ -92,17 +101,16 @@ def collect_panda(n_per_mat, rng):
     rows = []; tid = 10000
     for mid, sref in enumerate(MATERIALS):
         for _ in range(n_per_mat):
-            d_ = float(rng.uniform(0.045, 0.055)); h_ = float(rng.uniform(0.07, 0.09))
-            mass = float(rng.uniform(0.03, 0.06)); hoff = float(rng.uniform(-0.015, 0.015))
-            p = dict(d=d_, h=h_, mass=mass, mu=MU_FIXED, force=15.0, solref_t=sref)
-            r_obj = d_ / 2.0
-            store = {"tid": tid}
-            fgids = {}
+            o = sample_object(rng)                                   # SAME object distribution
+            hoff = float(rng.uniform(-0.015, 0.015))
+            p = dict(o, mu=MU_FIXED, force=15.0, solref_t=sref)
+            r_obj = p["d"] / 2.0
+            store = {"tid": tid}; fgids = {}
             def on_step(m, d, W, obj_bid, obj_gid, phase, _r=r_obj, _mid=mid, _st=store, _fg=fgids):
                 if "g" not in _fg: _fg["g"] = PA._finger_geoms(m)
                 for feat, Fn in contact_obs(m, d, W, obj_gid, _fg["g"], _r):
                     rows.append(feat + [Fn, _mid, _st["tid"]])
-            PA.run_grasp(p, on_step=on_step)
+            PA.run_grasp(p, on_step=on_step, hoff=hoff)             # FIX: pass hoff (grasp-height variation)
             tid += 1
     return rows
 

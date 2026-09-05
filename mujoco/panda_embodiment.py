@@ -151,6 +151,10 @@ def run_grasp(params, save_render=False, on_step=None, verbose=False, hoff=0.0):
         d.ctrl[:7] = qarm[:7]; d.ctrl[7] = grip
     def maybe_log(phase):
         if on_step is None: return
+        mujoco.mj_forward(m, d)          # RE-SYNC after mj_step: recompute contacts/efc_J at the
+                                         # post-step (qpos,qvel) so velocity features use a
+                                         # consistent state (matches the floating logger). Without
+                                         # this, efc_J (pre-step) x qvel (post-step) is mismatched.
         W, J = cp.assemble_W(m, d)
         on_step(m, d, W, obj_bid, obj_gid, phase)
 

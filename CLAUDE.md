@@ -57,13 +57,17 @@ outputs/RESULTS.md) now mark exact-by-construction / synthetic / privileged-info
 training `C_θ`); `Y_G` is the instantaneous (not closed-loop) port; everything within-simulator.
 **Next proposed:** sim-to-real stress test (`ε_C` predicts mismatched-model degradation); then
 train `C_θ` with a de-leaked dataset + a Lipschitz-respecting field learner.
-**First learned cross-embodiment transfer (2026-09, DONE — partial).** `deleak_dataset.py` +
+**De-leaked cross-embodiment transfer (2026-09, audit-corrected).** `deleak_dataset.py` +
 `deleak_train_eval.py`: de-leaked `C_θ` (material = categorical id only; raw `μ/solref/solimp`
-never fed) predicts `F_n`, trained on the floating gripper, FROZEN, tested on the real Panda.
-Finding: realized stiffness `k=F_n/pen` is NOT embodiment-invariant (Panda ~1.5-3.6× softer for
-the same material — MuJoCo's inertia-scaled `R`, audit pt 3, made concrete). Adding the analytical
-port `W_nn` roughly DOUBLES frozen transfer (`R² 0.24→0.40` quasi-static, `0.29→0.48` all-phase,
-port-blind ≈ mean) but does NOT reach the per-robot retrain ceiling (`~0.83-0.90`). Grip strategy
-also confounds absolute `F_n` (float→N, Panda tendon→sub-N). **Open item:** predict constitutive
-params and recompose through the real `(W+R)` solve-in-the-loop, not `W_nn` as a bare feature.
-Small backward-compatible edits added an optional `solref_t` to `scene_xml`/`_wrapper_xml`.
+never fed), trained on the floating gripper, FROZEN, evaluated on HELD-OUT Panda, MATCHED object
+distribution, SYNCED logging. A 2nd audit found 3 real issues I fixed: (i) Panda logger combined
+post-step qvel with pre-step efc_J → median 20% `v_n` error (fixed: `mj_forward` in `maybe_log`);
+(ii) `hoff` sampled but never passed to `run_grasp` (fixed); (iii) frozen vs retrain scored on
+different populations (fixed: identical held-out set). **The earlier "port ~doubles transfer
+0.24→0.40" DID NOT SURVIVE.** Corrected: the local **compliance** transfers (white-box `F_n=pen/
+k_mat`, `R²=0.72`, > Panda-retrain MLP `0.40` — structure beats brute force); the port `W_nn` as a
+fitted feature HURTS (`D→C` `0.72→−0.28`; MLPs explode) because float/Panda `W_nn` barely overlap
+(extrapolation); absolute `F_n` is grip-confounded (~6× scale). Narrow honest claim: a transferable
+local **compliance** law — NOT "the port carries the embodiment", NOT grasp selection. **Open:**
+use the real `(W+R)` solve-in-the-loop (not `W_nn` as a feature); move toward grasp DECISIONS
+(2nd-reviewer redirection). Backward-compatible `solref_t` added to `scene_xml`/`_wrapper_xml`.

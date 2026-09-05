@@ -223,54 +223,43 @@ wrote port_identification.png
 
 ---
 
-## First *learned* cross-embodiment transfer (de-leaked C_θ)
+## De-leaked cross-embodiment transfer (audit-corrected)
 
-`C_θ` trained as an actual network on a **de-leaked** dataset — inputs never see the raw
-`μ/solref/solimp` (material enters only as a categorical id); target is the contact normal force
-`F_n`. Trained ONLY on the floating gripper, then FROZEN and evaluated on the Panda. Two variants:
-**local-only** (blind to embodiment) vs **factorized** (adds the analytical per-contact Delassus
-`W_nn` — "freeze the law, recompute the port"). Honest, partial result: the realized stiffness is
-NOT embodiment-invariant (Panda ~1.5–3.6× softer for the same material — MuJoCo's inertia-scaled
-`R`), and adding the analytical port roughly **doubles** frozen transfer (`R² 0.24→0.40`
-quasi-static; `0.29→0.48` all-phase) but does **not** reach the Panda-retrain ceiling (`~0.83`).
-Grip strategy also confounds absolute `F_n` (float squeezes to N, Panda tendon to sub-N). Next:
-predict constitutive params and recompose through the real `(W+R)` solve-in-the-loop.
+De-leaked `C_θ` (material = categorical id only; raw `μ/solref/solimp` never fed), trained on the
+floating gripper, FROZEN, evaluated on **held-out Panda** trials, **matched object distribution**,
+**synchronized logging**. Six models on the identical held-out set: `A` local-only MLP, `B`
+factorized MLP (`+W_nn`), `C` white-box coupled series-compliance (`+W_nn`), `D` white-box
+analytical (`F_n=pen/k_mat`, no port), mean, and a Panda-retrained MLP reference.
 
-![First learned cross-embodiment transfer (de-leaked C_θ)](deleak_transfer.png)
+**Corrected after a second audit.** An earlier version reported the analytical port "roughly
+doubles" transfer (`R² 0.24→0.40`); that **did not survive** three fixes: (i) the Panda logger
+combined post-step velocity with pre-step contact Jacobians (**median 20% `v_n` error**); (ii) float
+and Panda used different object distributions; (iii) frozen vs retrained scored on different
+populations. Corrected findings: **the local compliance transfers** (white-box `D` `R²=0.72`,
+*beating* the Panda-retrained MLP `0.40` — structure > brute force); **the port `W_nn` as a fitted
+feature HURTS** (`D→C` `0.72→−0.28`; port MLP `B` worse than local `A`) because the arms' `W_nn`
+distributions barely overlap (frozen use = extrapolation); **absolute `F_n` does not transfer**
+(grip strategy differs ~6×). Narrow honest claim: a transferable local *compliance* law — not "the
+port carries the embodiment", not grasp selection. Using `W_nn` needs the real `(W+R)` solve.
+
+![De-leaked cross-embodiment transfer (audit-corrected)](deleak_transfer.png)
 
 ```text
-==========================================================================
-DE-LEAKED LEARNED CROSS-EMBODIMENT TRANSFER  (C_theta: local law -> F_n)
-==========================================================================
-  gradient check: analytic=-1.633749e-01 numeric=-1.633749e-01  rel=2.17e-10
-  float total=61833  panda total=157048   materials=5   (inputs never see raw mu/solref/solimp)
+ HELD-OUT PANDA EVALUATION (identical samples for every model; constitutive regime)
+  eval set n=28577 (held-out Panda)   float-train n=59626   matched object distribution
+  DIAGNOSTIC: median F_n float/panda = 6.3x (grip strategy);  panda W_nn inside float 5-95% band = 20%
+  model                        R2 (mean±sd)      median rel-err
+  mean baseline                -0.315 ± 0.000     0.54
+  D analytical (no port)        0.718 ± 0.000     0.55      <- local COMPLIANCE transfers
+  A local-only MLP             -60.507 ± 25.865   2.61      <- absolute F_n: float-scale, extrapolates
+  C coupled solve (+port)      -0.276 ± 0.000     0.75      <- adding W_nn HURTS (D 0.72 -> -0.28)
+  B factorized MLP (+port)     -52.918 ± 11.696   2.56
+  retrain on Panda (ref)        0.395 ± 0.197       -        <- reference (beaten by white-box D)
 
- MECHANISM: realized stiffness k=F_n/pen is NOT embodiment-invariant (the port differs too)
-  material |   k_float   k_panda  (N/m)  |  W_nn_float  W_nn_panda  (1/kg)
-     0     |     8494      5484        |      43.1        33.0
-     1     |     6024      3162        |      41.7        40.4
-     2     |     3248      1265        |      50.5        39.8
-     3     |     1772       492        |      52.2        36.0
-     4     |      505       527        |      52.8        41.2
-  => SAME material, DIFFERENT realized k (Panda ~1.5-3.6x softer): k is NOT invariant.
-
- REGIME: QUASI-STATIC (|v_n|<0.03)
-  local-only (naive)         float held-out R²=0.766 | FROZEN->PANDA R²=0.243  rel-err=1.73
-  factorized (+port W_nn)    float held-out R²=0.685 | FROZEN->PANDA R²=0.398  rel-err=1.51
-  mean-F_n baseline          R²=-0.208   |   RETRAINED on Panda R²=0.825 (upper bound)
-  --> port effect: R² 0.243 (blind) -> 0.398 (+port)  Δ=+0.155;  retrain ceiling 0.825
-
- REGIME: ALL PHASES
-  local-only (naive)         float held-out R²=0.615 | FROZEN->PANDA R²=0.293  rel-err=0.99
-  factorized (+port W_nn)    float held-out R²=0.590 | FROZEN->PANDA R²=0.479  rel-err=1.27
-  mean-F_n baseline          R²=-0.010   |   RETRAINED on Panda R²=0.899 (upper bound)
-  --> port effect: R² 0.293 (blind) -> 0.479 (+port)  Δ=+0.186;  retrain ceiling 0.899
-
- VERDICT: FACTORIZATION HELPS — recomputing the analytical port ~doubles how well a FROZEN,
- de-leaked float-trained local law transfers to a real second arm; a port-blind model cannot.
- Frozen transfer does NOT reach the per-robot retrain ceiling — realized F_n is a solve output
- (MuJoCo's R is inertia-scaled) and grip strategy differs — so the proper (W+R) solve-in-the-loop
- is the honest next step.
+ VERDICT: the earlier "port ~doubles transfer" did NOT survive the corrections. What holds: the
+ local constitutive COMPLIANCE transfers (R²≈0.72); the port W_nn as a fitted feature does not help
+ and hurts (non-overlapping distributions); absolute F_n is grip-confounded. Using W_nn needs the
+ real (W+R) solve, not a fitted coefficient.
 ```
 
 ---

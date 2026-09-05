@@ -130,60 +130,102 @@ def static_mask(rows, vmax=0.03):
     return (np.abs(rows[:, 1]) < vmax) & (rows[:, 0] > 1e-5)
 
 
-def run_regime(F, Pa, regime, results_fig):
-    print("\n" + "=" * 74); print(" REGIME: %s" % regime.upper()); print("=" * 74)
-    if regime.startswith("quasi"):
-        F = F[static_mask(F)]; Pa = Pa[static_mask(Pa)]
-    print("  float samples=%d  panda samples=%d" % (len(F), len(Pa)))
-    ftr_m, fte_m = split_by_trial(F, 0.7, 0)
-    ptr_m, pte_m = split_by_trial(Pa, 0.7, 1)
-    out = {}
-    for tag, use_port in [("local-only (naive)", False), ("factorized (+port W_nn)", True)]:
-        Xf, yf, _ = make_xy(F, use_port)
-        mdl = train(Xf[ftr_m], yf[ftr_m], seed=0)
-        r2_ftest = r2(yf[fte_m], predict(mdl, Xf[fte_m]))
-        Xp, yp, _ = make_xy(Pa, use_port)
-        yhat_p = predict(mdl, Xp)
-        out[tag] = dict(r2_ftest=r2_ftest, r2_ptrans=r2(yp, yhat_p),
-                        rel_ptrans=relmed(yp, yhat_p), yhat_p=yhat_p)
-        print("  %-26s float held-out R²=%.3f | FROZEN->PANDA R²=%.3f  rel-err=%.2f"
-              % (tag, r2_ftest, out[tag]["r2_ptrans"], out[tag]["rel_ptrans"]))
-    Xp, yp, _ = make_xy(Pa, True)
-    r2_mean = r2(yp, np.full_like(yp, make_xy(F, True)[1][ftr_m].mean()))
-    mdl_pan = train(Xp[ptr_m], yp[ptr_m], seed=2)
-    r2_retrain = r2(yp[pte_m], predict(mdl_pan, Xp[pte_m]))
-    print("  %-26s R²=%.3f   |   %-18s R²=%.3f (upper bound)"
-          % ("mean-F_n baseline", r2_mean, "RETRAINED on Panda", r2_retrain))
-    lo = out["local-only (naive)"]["r2_ptrans"]; fa = out["factorized (+port W_nn)"]["r2_ptrans"]
-    print("  --> port effect on frozen transfer:  R² %.3f (blind) -> %.3f (+port)   Δ=%+.3f;"
-          "  retrain ceiling %.3f" % (lo, fa, fa - lo, r2_retrain))
-    results_fig[regime] = dict(lo=lo, fa=fa, retrain=r2_retrain, mean=r2_mean,
-                               yp=yp, loc=out["local-only (naive)"]["yhat_p"],
-                               fac=out["factorized (+port W_nn)"]["yhat_p"])
-    return lo, fa, r2_retrain
+def constit(rows):
+    """Constitutive regime: quasi-static, real penetration and real force. The clean
+    F_n ~ k(material,port)*pen relationship (used for BOTH training and evaluation)."""
+    return static_mask(rows) & (rows[:, 0] > 1e-4) & (rows[:, 7] > 0.05)
+
+
+# ---------------- white-box physics models (no MLP) ----------------
+# Series-compliance model:  pen/F_n = 1/k_mat + alpha * W_nn   (linear in [1/k_mat, alpha]).
+# D (analytical, NO port): pen/F_n = 1/k_mat (per material) -> assumes stiffness invariant.
+# C (coupled, +port): adds alpha*W_nn, a solve-like port-compliance term. Fit on FLOAT.
+def whitebox_fit(rows, use_port):
+    y = rows[:, 0] / rows[:, 7]                              # pen / F_n  (compliance)
+    oh = np.eye(NMAT)[rows[:, 8].astype(int)]
+    A = np.column_stack([oh, rows[:, 6]]) if use_port else oh
+    coef, *_ = np.linalg.lstsq(A, y, rcond=None)
+    return coef
+
+def whitebox_pred(coef, rows, use_port):
+    oh = np.eye(NMAT)[rows[:, 8].astype(int)]
+    A = np.column_stack([oh, rows[:, 6]]) if use_port else oh
+    inv_k = np.maximum(A @ coef, 1e-6)                       # predicted pen/F_n
+    return rows[:, 0] / inv_k                                # F_n = pen / (pen/F_n)
 
 
 def stiffness_table(F, Pa):
-    """Interpretable MECHANISM: per material, the realized normal stiffness k (from a
-    through-origin fit F_n = k*pen on quasi-static contacts) and the median analytical
-    port W_nn, for both embodiments. Shows k is NOT embodiment-invariant, and that W_nn
-    also differs across arms (so it carries embodiment information the learned model can
-    use — though the k<->W_nn relation is not simply monotonic)."""
-    print("\n" + "=" * 74); print(" MECHANISM: realized stiffness k=F_n/pen is NOT embodiment-invariant (the port differs too)")
+    """MECHANISM: per material, realized normal stiffness k (through-origin fit F_n=k*pen on
+    the constitutive regime) and median port W_nn, both embodiments. k is NOT embodiment-
+    invariant; W_nn also differs. Prints the actual softness ratio (no hard-coded claim)."""
+    print("\n" + "=" * 74); print(" MECHANISM: realized stiffness k=F_n/pen is NOT embodiment-invariant")
     print("=" * 74)
-    print("  material |   k_float   k_panda  (N/m)  |  W_nn_float  W_nn_panda  (1/kg)")
+    print("  material |   k_float   k_panda  (N/m)  |  W_nn_float  W_nn_panda  (1/kg) |  k_float/k_panda")
+    ratios = []
     for mid in range(NMAT):
         row = []
         for X in (F, Pa):
-            q = X[(X[:, 8] == mid) & static_mask(X) & (X[:, 0] > 1e-4)]
+            q = X[(X[:, 8] == mid) & constit(X)]
             if len(q) < 20: row += [np.nan, np.nan]; continue
-            k = float(np.sum(q[:, 0] * q[:, 7]) / np.sum(q[:, 0] ** 2))
-            row += [k, float(np.median(q[:, 6]))]
-        print("     %d     | %8.0f  %8.0f        |  %8.1f    %8.1f"
-              % (mid, row[0], row[2], row[1], row[3]))
-    print("  => SAME material, DIFFERENT realized k across embodiments (Panda ~1.5-3.6x softer): k is NOT")
-    print("     embodiment-invariant. W_nn also differs across arms, carrying embodiment info the learned")
-    print("     model exploits — though the k<->W_nn relation is not simply monotonic (R is inertia-scaled).")
+            row += [float(np.sum(q[:, 0] * q[:, 7]) / np.sum(q[:, 0] ** 2)), float(np.median(q[:, 6]))]
+        rr = row[0] / row[2] if row[2] else np.nan
+        if np.isfinite(rr): ratios.append(rr)
+        print("     %d     | %8.0f  %8.0f        |  %8.1f    %8.1f      |  %.2f"
+              % (mid, row[0], row[2], row[1], row[3], rr))
+    print("  => same material, DIFFERENT realized k: float/panda ratio spans %.2f-%.2fx (median %.2f)."
+          % (min(ratios), max(ratios), np.median(ratios)))
+    print("     k is NOT embodiment-invariant; the analytical port W_nn also differs across arms.")
+
+
+def eval_all(F, Pa):
+    """Every model evaluated on the SAME held-out Panda constitutive samples. Frozen models
+    (A,B,C,D) train on FLOAT; the retrain reference trains on Panda-train. Reports R² (mean±sd
+    over 3 seeds for the MLPs) and median relative error."""
+    ptr_m, pte_m = split_by_trial(Pa, 0.7, 1)
+    Pte = Pa[pte_m & constit(Pa)]; Ptr = Pa[ptr_m & constit(Pa)]
+    Fc = F[constit(F)]; ftr_m, _ = split_by_trial(Fc, 0.7, 0); Ftr = Fc[ftr_m]
+    yte = Pte[:, 7]
+    print("\n" + "=" * 74)
+    print(" HELD-OUT PANDA EVALUATION (identical samples for every model; constitutive regime)")
+    print("=" * 74)
+    print("  eval set n=%d (held-out Panda)   float-train n=%d   matched object distribution" % (len(Pte), len(Ftr)))
+    # DISTRIBUTION diagnostic: the two failure drivers the corrections exposed.
+    fscale = np.median(Ftr[:, 7]) / max(np.median(Pte[:, 7]), 1e-9)
+    wlo, whi = np.percentile(Ftr[:, 6], [5, 95]); pv = Pte[:, 6]
+    overlap = float(np.mean((pv >= wlo) & (pv <= whi)))
+    print("  DIAGNOSTIC: median F_n float/panda = %.1fx (grip strategy);  panda W_nn inside float 5-95%% band = %.0f%%"
+          % (fscale, 100 * overlap))
+    print("  => absolute F_n differs by grip strategy, and the port feature W_nn barely overlaps (frozen use = extrapolation).")
+    res = {}
+    def mlp_scores(Xtr, ytr, Xte, seeds=(0, 1, 2)):
+        r2s, preds = [], []
+        for sd in seeds:
+            m = train(Xtr, ytr, seed=sd); yh = predict(m, Xte)
+            r2s.append(r2(yte, yh)); preds.append(yh)
+        return np.mean(r2s), np.std(r2s), preds[0]
+    # A / B : frozen float-trained MLPs
+    for tag, up in [("A local-only MLP", False), ("B factorized MLP (+port)", True)]:
+        Xtr, ytr, _ = make_xy(Ftr, up); Xte, _, _ = make_xy(Pte, up)
+        m, sd, pred = mlp_scores(Xtr, ytr, Xte)
+        res[tag] = dict(r2=m, sd=sd, rel=relmed(yte, pred), pred=pred)
+    # D / C : white-box physics, frozen float-fit
+    for tag, up in [("D analytical (no port)", False), ("C coupled solve (+port)", True)]:
+        coef = whitebox_fit(Ftr, up); pred = whitebox_pred(coef, Pte, up)
+        res[tag] = dict(r2=r2(yte, pred), sd=0.0, rel=relmed(yte, pred), pred=pred)
+    # references
+    res["mean baseline"] = dict(r2=r2(yte, np.full_like(yte, make_xy(Ftr, True)[1].mean())),
+                                sd=0.0, rel=relmed(yte, np.full_like(yte, yte.mean())), pred=None)
+    Xr, yr, _ = make_xy(Ptr, True); Xte2, _, _ = make_xy(Pte, True)
+    m, sd, _ = mlp_scores(Xr, yr, Xte2)
+    res["retrain on Panda (ref)"] = dict(r2=m, sd=sd, rel=np.nan, pred=None)
+    order = ["mean baseline", "D analytical (no port)", "A local-only MLP",
+             "C coupled solve (+port)", "B factorized MLP (+port)", "retrain on Panda (ref)"]
+    print("  %-28s %-16s  %-s" % ("model", "R2 (mean±sd)", "median rel-err"))
+    for k in order:
+        r = res[k]
+        print("  %-28s %6.3f ± %.3f     %s"
+              % (k, r["r2"], r["sd"], "%.2f" % r["rel"] if np.isfinite(r["rel"]) else "  -"))
+    return res, yte
 
 
 def main():
@@ -194,42 +236,53 @@ def main():
     print("  float total=%d  panda total=%d   materials=%d   (inputs never see raw mu/solref/solimp)"
           % (len(F), len(Pa), NMAT))
     stiffness_table(F, Pa)
-    results_fig = {}
-    lo_s, fa_s, ret_s = run_regime(F, Pa, "quasi-static (|v_n|<0.03)", results_fig)
-    lo_a, fa_a, ret_a = run_regime(F, Pa, "all phases", results_fig)
+    res, yte = eval_all(F, Pa)
 
+    A = res["A local-only MLP"]["r2"]; B = res["B factorized MLP (+port)"]["r2"]
+    D = res["D analytical (no port)"]["r2"]; C = res["C coupled solve (+port)"]["r2"]
+    ret = res["retrain on Panda (ref)"]["r2"]
     print("\n" + "-" * 74)
-    print(" HEADLINE (frozen de-leaked float-trained C_θ -> the Panda, F_n, quasi-static):")
-    print("   local-only (blind to embodiment) R²=%.3f  vs  factorized (+analytical port) R²=%.3f  (retrain ceiling %.3f)"
-          % (lo_s, fa_s, ret_s))
-    print("   the analytical port closes %.0f%% of the gap to a Panda-retrained model; a port-blind law does not transfer."
-          % (100 * (fa_s - lo_s) / max(ret_s - lo_s, 1e-9)))
-    helps = (fa_s - lo_s) > 0.1
-    print(" VERDICT: %s" % (
-        "FACTORIZATION HELPS — recomputing the analytical port ~doubles how well a FROZEN, de-leaked "
-        "float-trained local law transfers to a real second arm; a port-blind model cannot. Frozen "
-        "transfer does NOT reach the per-robot retrain ceiling — realized F_n is a solve output "
-        "(MuJoCo's R is inertia-scaled) and grip strategy differs — so closing that gap with the "
-        "proper (W+R) solve-in-the-loop is the honest next step." if helps else
-        "PORT DOES NOT RECOVER TRANSFER at this scale — see numbers."))
+    print(" HEADLINE (held-out Panda, constitutive regime, matched objects, SYNCED logging):")
+    print("   Q1 does the local law transfer?   YES via COMPLIANCE: white-box F_n=pen/k_mat(float) -> R²=%.3f." % D)
+    print("      (grip scales pen and F_n together, so k=F/pen is ~grip-invariant and transfers.)")
+    print("   Q2 does adding the analytical PORT W_nn help?   NO, it HURTS: white-box D R²=%.3f -> C(+port) R²=%.3f;" % (D, C))
+    print("      MLP A R²=%.3f -> B(+port) R²=%.3f. W_nn barely overlaps across arms, so using it = extrapolation." % (A, B))
+    print("   Q3 does a black-box MLP on ABSOLUTE F_n transfer?   NO: it predicts float-scale forces on the Panda")
+    print("      (grip strategy differs ~%.0fx). Per-robot retrain reference R²=%.3f (a reference, not an upper bound)."
+          % (np.median(F[constit(F)][:, 7]) / max(np.median(Pa[constit(Pa)][:, 7]), 1e-9), ret))
+    print(" VERDICT: The earlier 'analytical port ~doubles transfer' result DID NOT SURVIVE the corrections")
+    print("   (synced logging + matched objects + fair held-out eval). What holds honestly: the local constitutive")
+    print("   COMPLIANCE transfers across embodiments (R²≈%.2f); the port W_nn as a fitted feature does NOT help and" % D)
+    print("   hurts (non-overlapping distributions); absolute F_n is confounded by grip strategy. This supports the")
+    print("   NARROW claim 'a transferable local compliance law', not 'the analytical port carries the embodiment'")
+    print("   nor 'transferable grasp selection'. Using W_nn needs the real (W+R) SOLVE, not a fitted coefficient.")
 
-    # ---------------- figure (quasi-static F_n regime) ----------------
-    rf = results_fig["quasi-static (|v_n|<0.03)"]
+    # ---------------- figure ----------------
     import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(1, 2, figsize=(11, 4.4))
-    bars = [("local-only\n(naive)", rf["lo"], "#c40"), ("factorized\n(+port)", rf["fa"], "#2a8"),
-            ("retrain on\nPanda (ref)", rf["retrain"], "#39a"), ("mean\npredictor", rf["mean"], "#999")]
-    ax[0].bar([b[0] for b in bars], [max(b[1], -0.05) for b in bars], color=[b[2] for b in bars])
-    ax[0].axhline(0, color="k", lw=.8); ax[0].set_ylabel("R²  (F_n on the Panda, quasi-static)")
-    ax[0].set_title("Frozen float-trained C_θ → Panda\n(recompute the analytical port; higher = better)")
-    ax[0].set_ylim(min(-0.1, rf["mean"] - 0.05), 1.0)
-    yp = rf["yp"]; s = np.random.default_rng(0).integers(0, len(yp), min(3000, len(yp)))
-    ax[1].scatter(yp[s], rf["loc"][s], s=6, alpha=.3, c="#c40", label="local-only (blind)")
-    ax[1].scatter(yp[s], rf["fac"][s], s=6, alpha=.3, c="#2a8", label="factorized (+port)")
-    lim = float(np.percentile(yp, 99))
+    fig, ax = plt.subplots(1, 2, figsize=(11.5, 4.4))
+    FLOOR = -1.0
+    order = [("mean", res["mean baseline"]["r2"], "#999"),
+             ("A local MLP", A, "#c40"), ("B factorized\nMLP (+port)", B, "#e83"),
+             ("C coupled\n(+port)", C, "#8c8"), ("D analytical\n(no port)", D, "#2a8"),
+             ("retrain\n(ref)", ret, "#39a")]
+    heights = [max(o[1], FLOOR) for o in order]
+    ax[0].bar([o[0] for o in order], heights, color=[o[2] for o in order])
+    for i, o in enumerate(order):        # label true value on clipped/negative bars
+        if o[1] < FLOOR + 0.02:
+            ax[0].text(i, FLOOR + 0.03, "%.1f\n(extrapolates)" % o[1], ha="center", va="bottom", fontsize=7)
+    ax[0].axhline(0, color="k", lw=.8); ax[0].set_ylabel("R²  (F_n, held-out Panda)")
+    ax[0].set_title("Frozen float→Panda transfer (matched objects, SYNCED logging)\n"
+                    "only the white-box COMPLIANCE (D) transfers; the port hurts")
+    ax[0].set_ylim(FLOOR, 1.0)
+    ax[0].tick_params(axis="x", labelsize=8)
+    pa = res["A local-only MLP"]["pred"]; pb = res["B factorized MLP (+port)"]["pred"]
+    s = np.random.default_rng(0).integers(0, len(yte), min(3000, len(yte)))
+    ax[1].scatter(yte[s], pa[s], s=6, alpha=.3, c="#c40", label="A local-only")
+    ax[1].scatter(yte[s], pb[s], s=6, alpha=.3, c="#2a8", label="B factorized (+port)")
+    lim = float(np.percentile(yte, 99))
     ax[1].plot([0, lim], [0, lim], "k--", lw=1); ax[1].set_xlim(0, lim); ax[1].set_ylim(0, lim)
     ax[1].set_xlabel("true F_n on Panda [N]"); ax[1].set_ylabel("predicted F_n [N]")
-    ax[1].set_title("Frozen transfer: predicted vs true\n(on the dashed line = perfect)"); ax[1].legend()
+    ax[1].set_title("Predicted vs true (held-out Panda)\n(on the dashed line = perfect)"); ax[1].legend()
     plt.tight_layout(); plt.savefig(os.path.join(OUT_DIR, "deleak_transfer.png"), dpi=95)
     print("\n wrote %s/deleak_transfer.png" % OUT_DIR)
 
