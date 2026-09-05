@@ -342,7 +342,7 @@ inside the real solve; testing that is the next step.
 
 - **(A) A computable transfer certificate** `‖Ĥ−H‖ ≤ (ε_Y+ε_C)/(m(m−ε))` with
   `m = σ_min(Y_G+C^{-1})`. *Lit-checked as genuinely novel* — prior port-Hamiltonian
-  learning (van der Schaft; Neary–Topcu arXiv:2412.11215) and NeRD (arXiv:2508.15755) do
+  learning (van der Schaft; Neary–Topcu arXiv:2212.00893, L4DC 2023) and NeRD (arXiv:2508.15755) do
   not give a computable, embodiment-transfer error certificate.
 - **(B) An observation-nullspace injectivity theorem** for internal forces + a
   proprioception-resolution condition (`ker O ⊆ ker P_τ`, defect `β_τ`). The facts are

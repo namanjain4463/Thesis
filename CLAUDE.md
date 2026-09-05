@@ -71,3 +71,15 @@ fitted feature HURTS (`D→C` `0.72→−0.28`; MLPs explode) because float/Pand
 local **compliance** law — NOT "the port carries the embodiment", NOT grasp selection. **Open:**
 use the real `(W+R)` solve-in-the-loop (not `W_nn` as a feature); move toward grasp DECISIONS
 (2nd-reviewer redirection). Backward-compatible `solref_t` added to `scene_xml`/`_wrapper_xml`.
+**Tier-2 research + proposal (2026-09).** `docs/tier2_grasp_selection.md`: literature review (4
+subagents; arxiv egress was blocked so ids are search-index-verified, some from-memory — flagged in
+the doc) + the proposed Contribution C = **Port-Conditioned Certified Grasp Selection**: select
+grasp + hand participation by composing the frozen local law with each body's RECOMPUTED analytical
+port INSIDE the `(W+R)` solve (the Tier-1 negative — port-as-feature extrapolates — motivates using
+it as physics, not a feature), gated by the two-source certificate + the internal-force
+observability test; decisive experiment = a CERTIFIED grasp-RANKING REVERSAL when the body changes,
+each reversal isolating one physical cause (reach / force-limit / balance / unobservable-squeeze).
+Closest prior work to beat: GraspGen-X (2606.00998, geometry-conditioned), Neary–Topcu (2212.00893,
+compositional bound — NOTE README had the wrong id 2412.11215, now fixed), Knuth (2010.08993,
+Lipschitz-gated planning). First build proposed: a MuJoCo ranking-reversal micro-benchmark reusing
+`graspability.py` + `cross_embodiment_v2` port split. NOT yet built — awaiting go-ahead.
