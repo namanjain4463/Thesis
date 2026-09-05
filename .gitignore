@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 mujoco/menagerie/
 *.npz
+deleak_out/
+mujoco/deleak_out/
+mujoco/m2_out/

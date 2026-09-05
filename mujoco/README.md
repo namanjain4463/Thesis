@@ -23,6 +23,7 @@ Core pipeline
 - `m2_floating_gripper_grasp.py` — embodiment #1: floating parallel gripper grasp generator + dataset builder hook.
 - `panda_embodiment.py`   — embodiment #2: **real Franka Panda** (mujoco_menagerie) + DLS IK. Reuses `contact_probe` + `z_local_schema` **unchanged**.
 - `build_zlocal_dataset.py` — randomized grasps → consolidated `z_local` training set.
+- `deleak_dataset.py` + `deleak_train_eval.py` — **first *learned* cross-embodiment transfer** on a DE-LEAKED dataset (material enters only as a categorical id; raw `μ/solref/solimp` never fed). `C_θ` (numpy MLP, gradient-checked) predicts `F_n`, trained on the floating gripper, FROZEN, tested on the Panda. Local-only vs factorized (+ analytical port `W_nn`). Honest partial result: the port ~doubles frozen transfer (`R² 0.24→0.40`) but does not reach the Panda-retrain ceiling (`~0.83`); realized stiffness is not embodiment-invariant (inertia-scaled `R`). Writes `deleak_out/` (gitignored).
 
 Validation (run any of these; each prints its own verdict)
 - `verify_solve.py`       — implicit gradient through the convex contact solve vs finite diff (err ~1e-12).

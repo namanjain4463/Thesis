@@ -36,6 +36,7 @@ def _wrapper_xml(params):
     """Wrapper that includes the real panda.xml and adds pedestal + object.
     Written INTO the franka dir so `include` and meshdir='assets' resolve."""
     d, h, mass, mu = params["d"], params["h"], params["mass"], params["mu"]
+    solref_t = params.get("solref_t", 0.01)      # object normal stiffness (material)
     oz = PED_TOP + h/2 + 0.001
     return f"""<mujoco model="panda_grasp">
   <include file="panda.xml"/>
@@ -51,7 +52,7 @@ def _wrapper_xml(params):
       <freejoint name="objfree"/>
       <geom name="object" type="cylinder" size="{d/2} {h/2}" mass="{mass}"
             friction="{mu} 0.02 0.001" rgba="0.2 0.6 0.9 1"
-            solref="0.01 1" solimp="0.9 0.95 0.001"/>
+            solref="{solref_t} 1" solimp="0.9 0.95 0.001"/>
     </body>
   </worldbody>
 </mujoco>"""

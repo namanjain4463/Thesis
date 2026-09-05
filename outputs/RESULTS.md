@@ -223,6 +223,58 @@ wrote port_identification.png
 
 ---
 
+## First *learned* cross-embodiment transfer (de-leaked C_θ)
+
+`C_θ` trained as an actual network on a **de-leaked** dataset — inputs never see the raw
+`μ/solref/solimp` (material enters only as a categorical id); target is the contact normal force
+`F_n`. Trained ONLY on the floating gripper, then FROZEN and evaluated on the Panda. Two variants:
+**local-only** (blind to embodiment) vs **factorized** (adds the analytical per-contact Delassus
+`W_nn` — "freeze the law, recompute the port"). Honest, partial result: the realized stiffness is
+NOT embodiment-invariant (Panda ~1.5–3.6× softer for the same material — MuJoCo's inertia-scaled
+`R`), and adding the analytical port roughly **doubles** frozen transfer (`R² 0.24→0.40`
+quasi-static; `0.29→0.48` all-phase) but does **not** reach the Panda-retrain ceiling (`~0.83`).
+Grip strategy also confounds absolute `F_n` (float squeezes to N, Panda tendon to sub-N). Next:
+predict constitutive params and recompose through the real `(W+R)` solve-in-the-loop.
+
+![First learned cross-embodiment transfer (de-leaked C_θ)](deleak_transfer.png)
+
+```text
+==========================================================================
+DE-LEAKED LEARNED CROSS-EMBODIMENT TRANSFER  (C_theta: local law -> F_n)
+==========================================================================
+  gradient check: analytic=-1.633749e-01 numeric=-1.633749e-01  rel=2.17e-10
+  float total=61833  panda total=157048   materials=5   (inputs never see raw mu/solref/solimp)
+
+ MECHANISM: realized stiffness k=F_n/pen is NOT embodiment-invariant (the port differs too)
+  material |   k_float   k_panda  (N/m)  |  W_nn_float  W_nn_panda  (1/kg)
+     0     |     8494      5484        |      43.1        33.0
+     1     |     6024      3162        |      41.7        40.4
+     2     |     3248      1265        |      50.5        39.8
+     3     |     1772       492        |      52.2        36.0
+     4     |      505       527        |      52.8        41.2
+  => SAME material, DIFFERENT realized k (Panda ~1.5-3.6x softer): k is NOT invariant.
+
+ REGIME: QUASI-STATIC (|v_n|<0.03)
+  local-only (naive)         float held-out R²=0.766 | FROZEN->PANDA R²=0.243  rel-err=1.73
+  factorized (+port W_nn)    float held-out R²=0.685 | FROZEN->PANDA R²=0.398  rel-err=1.51
+  mean-F_n baseline          R²=-0.208   |   RETRAINED on Panda R²=0.825 (upper bound)
+  --> port effect: R² 0.243 (blind) -> 0.398 (+port)  Δ=+0.155;  retrain ceiling 0.825
+
+ REGIME: ALL PHASES
+  local-only (naive)         float held-out R²=0.615 | FROZEN->PANDA R²=0.293  rel-err=0.99
+  factorized (+port W_nn)    float held-out R²=0.590 | FROZEN->PANDA R²=0.479  rel-err=1.27
+  mean-F_n baseline          R²=-0.010   |   RETRAINED on Panda R²=0.899 (upper bound)
+  --> port effect: R² 0.293 (blind) -> 0.479 (+port)  Δ=+0.186;  retrain ceiling 0.899
+
+ VERDICT: FACTORIZATION HELPS — recomputing the analytical port ~doubles how well a FROZEN,
+ de-leaked float-trained local law transfers to a real second arm; a port-blind model cannot.
+ Frozen transfer does NOT reach the per-robot retrain ceiling — realized F_n is a solve output
+ (MuJoCo's R is inertia-scaled) and grip strategy differs — so the proper (W+R) solve-in-the-loop
+ is the honest next step.
+```
+
+---
+
 ## Second embodiment: Franka Panda grasp filmstrip
 
 Real Franka Panda (menagerie) grasps and lifts the same cylinder off the pedestal (obj_z 0.491 -> 0.600), emitting schema-identical z_local.

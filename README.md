@@ -295,6 +295,41 @@ known pure endpoint wrench (you need an instrumented/known-wrench setup) nor the
 rigid port: the deployable `Y_G` is the **closed-loop** endpoint admittance (servo + latency),
 which is **not yet identified** (§10, §14).
 
+### 3.12 First *learned* cross-embodiment transfer (de-leaked C_θ)
+
+The results above use analytical/measured fields. Here `C_θ` is an actual trained network, on a
+**de-leaked** dataset: the frozen `z_local` fed the true `μ/solref/solimp` straight in (leakage —
+the net reads the answer). Instead the only material handle is a **categorical material id** (you
+know which object you picked up), never the physical parameters; every other input is a genuine
+observable (`penetration, v_n, |v_t|, κ_obj, contact height, normal alignment`). `C_θ` predicts
+the contact normal force `F_n`. It is trained **only on the floating gripper**, then **frozen**
+and evaluated on the **Panda** (`deleak_dataset.py`, `deleak_train_eval.py`; MLP with a
+finite-difference gradient check to `2e-10`). Two variants: **local-only** (blind to the
+embodiment) and **factorized**, which adds the analytical per-contact normal Delassus `W_nn` —
+"freeze the local law, recompute the port."
+
+What we found, stated plainly:
+
+- **The realized stiffness `k = F_n/pen` is NOT embodiment-invariant** — for the *same* material
+  the Panda reads ~1.5–3.6× softer than the floating gripper. This is MuJoCo's inertia-scaled
+  regularizer `R` (audit point 3) made concrete: realized `F_n` is a *solve output*, not a purely
+  local quantity, so a naive "learn `F_n`" law cannot transfer.
+- **The analytical port roughly doubles frozen transfer.** Frozen float→Panda `F_n` (quasi-static):
+  local-only `R²=0.24`, factorized `R²=0.40`; all-phases `0.29 → 0.48`. A port-blind law barely
+  beats the mean; recomputing `W_nn` recovers a large part of the signal — direct evidence for the
+  factorization *direction*.
+- **But frozen transfer does not reach the ceiling.** A Panda-retrained model gets `R²≈0.83–0.90`;
+  the factorized frozen law reaches `~0.40–0.48`, closing ~1/4–1/2 of the gap. Two honest reasons:
+  the inertia-scaled `R` is only partly captured by the scalar `W_nn` feature, and **grip strategy
+  differs** (the floating gripper squeezes to newtons, the Panda tendon to sub-newton), so absolute
+  `F_n` carries an operating-point confound. The proper remedy — predict the *constitutive*
+  parameters and recompose through the actual `(W+R)` **solve** — is the next step, not `W_nn` as a
+  bare feature.
+
+So: the factorization's core move (freeze the law, recompute the port) **measurably helps** a real
+learned law transfer to a real second arm, and we have quantified exactly how far it gets and why
+it stops there. This is the first *learned* result; it is a partial, honest one.
+
 ---
 
 ## 4. Contributions & novelty
@@ -341,6 +376,7 @@ which is **not yet identified** (§10, §14).
 | 9 | `hetero_covering.py` | covering on a **learned** field | **NEGATIVE**: RBF-KRR mean-reverts (`μ̂=−0.27`), violates bound `100%`; geometry OK (Lipschitz-consistent est. `0%`) |
 | 10 | `graspability.py` | graspability = named margins | 8/8 curated (uses **post-contact** `ΣF_n` → consistency check, not a-priori screen) |
 | 11 | `port_identification.py` | free-space `ε_Y` + two-source certificate | Panda naive port 94% wrong (real); ID is **instantaneous open-loop** (closed-loop `Y_G` open) |
+| 12 | `deleak_dataset.py` + `deleak_train_eval.py` | **first *learned* cross-embodiment transfer**, de-leaked C_θ (no raw `μ/solref/solimp`) | frozen float→Panda `F_n` R²: local-only `0.24` → **factorized (+port) `0.40`** (retrain ceiling `0.83`); partial, honest |
 
 **Why this order.** We validated the *load-bearing identity* (P1) before anything built on
 it; got *one* embodiment fully working and visually verified (rendered filmstrips) before
@@ -443,8 +479,11 @@ operator `O` — **`C_θ` is never retrained**. Plug-and-**certify**, not plug-a
 
 1. **Now:** sim-to-real stress test (`ε_C` predicts mismatched-model degradation).
 2. **Next:** closed-loop `Y_G` identification + Lynxmotion adapter; mesh curvature estimator.
-3. **Then:** train the actual `C_θ` network on the `z_local` dataset; first *learned*
-   cross-embodiment transfer (empirical certificate with a real learned law).
+3. **Done (partial, §3.12):** trained a de-leaked `C_θ` and ran the first *learned*
+   cross-embodiment transfer — the analytical port roughly doubles frozen float→Panda transfer
+   but does not reach the retrain ceiling. **Next here:** predict *constitutive parameters* and
+   recompose through the actual `(W+R)` solve-in-the-loop (instead of `W_nn` as a bare feature),
+   and remove the grip-strategy confound on absolute `F_n`.
 4. **Then:** bimanual coalition selection + probe-design theorem for internal force.
 5. **Deploy:** Jetson runtime, shadow-mode, low-speed execution with live certificate gating.
 
@@ -494,9 +533,13 @@ Runtime notes: MuJoCo 3.12.0; headless render `MUJOCO_GL=osmesa`; Panda needs
 2. `Y_G` is currently the rigid-body/constrained **instantaneous** port; the **closed-loop
    controller-shaped** port on real hardware is not yet identified, and the port ID uses a
    *known* applied wrench (an instrumented setup is needed on hardware).
-3. `C_θ` is **not yet trained**. The certificate is verified on synthetic + analytically-
-   identified ports; the covering *geometry* and the *physical* field bound hold — but there is
-   no learned-network result yet (pipeline + implicit gradient are ready).
+3. `C_θ` is now **trained** on a de-leaked dataset (§3.12), giving the first *learned*
+   cross-embodiment transfer — but it is **partial**: recomputing the analytical port roughly
+   doubles frozen float→Panda transfer (`R² 0.24→0.40`) yet does not reach the per-robot retrain
+   ceiling (`~0.83`). Realized `F_n` is a solve output (inertia-scaled `R`) and grip strategy
+   differs, so predicting absolute `F_n` with `W_nn` as a bare feature only goes so far; the
+   proper `(W+R)` **solve-in-the-loop** on predicted constitutive parameters is the open item.
+   The certificate itself is still verified only on synthetic + analytically-identified ports.
 4. The **camera-only Lynxmotion cannot observe internal force** — a fundamental limit the
    certificate must respect by rejecting force-critical tasks.
 5. **Covering law on a *learned* field is not established.** On the learned RBF friction field,

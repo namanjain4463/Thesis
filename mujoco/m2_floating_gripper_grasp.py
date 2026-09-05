@@ -38,9 +38,11 @@ PALM_HOME = 0.6                  # world z of the palm at pz=0 (starts clear abo
 # ----------------------------------------------------------------------
 # scene
 # ----------------------------------------------------------------------
-def scene_xml(diam, height, mass, mu, squeeze_force):
+def scene_xml(diam, height, mass, mu, squeeze_force, solref_t=0.01):
     """Floating parallel gripper + cylinder on a pedestal. `squeeze_force` caps
-    the finger actuator force (the slip knob). Object friction = mu."""
+    the finger actuator force (the slip knob). Object friction = mu. `solref_t` is
+    the OBJECT-geom normal solref time-constant (material normal stiffness; smaller
+    = stiffer). Default 0.01 reproduces the original scene exactly."""
     r = diam / 2.0
     ped_top = 0.20
     obj_z = ped_top + height / 2.0 + 0.001
@@ -75,7 +77,8 @@ def scene_xml(diam, height, mass, mu, squeeze_force):
     <body name="object" pos="0 0 {obj_z}">
       <freejoint name="obj"/>
       <geom name="object" type="cylinder" size="{r} {height/2.0}" mass="{mass}"
-            condim="3" friction="{mu} 0.005 0.0001" contype="1" conaffinity="1"/>
+            condim="3" friction="{mu} 0.005 0.0001" contype="1" conaffinity="1"
+            solref="{solref_t} 1" solimp="0.9 0.95 0.001"/>
     </body>
   </worldbody>
 
@@ -99,7 +102,8 @@ def run_trial(params, seed=0, save_traj=True, on_step=None):
     d_ = params["d"]; h_ = params["h"]
     obj_z = 0.20 + h_ / 2.0 + 0.001
     m = mujoco.MjModel.from_xml_string(
-        scene_xml(d_, h_, params["mass"], params["mu"], params["force"]))
+        scene_xml(d_, h_, params["mass"], params["mu"], params["force"],
+                  params.get("solref_t", 0.01)))
     cp.force_dense_jacobian(m)
     data = mujoco.MjData(m)
 
