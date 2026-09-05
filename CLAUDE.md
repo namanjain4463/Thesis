@@ -43,8 +43,17 @@ with each embodiment's analytical port `Y_G` via a convex contact solve; transfe
 - Pre-embodiment gate: `mujoco/premises_final.py`. Headline experiments: `cross_embodiment_v2.py` (port split + certificate), `surface_field_covering.py` (covering law), `hetero_covering.py` (learned material field), `graspability.py` (graspability certificate), `port_identification.py` (free-space `ε_Y` + two-source certificate).
 
 ## Current frontier (update each session)
-Certificate now carries both hardware error sources: `ε_Y` (free-space port ID) and `ε_C`
-(contact-law sim-to-real). **Next proposed:** a genuine sim-to-real stress test — learn a
-law/port under one contact model, evaluate under a deliberately mismatched contact model,
-and confirm `ε_C` predicts the degradation. Still-open honest boundary: everything so far is
-validated *within-simulator* (errors measured against MuJoCo's own ground truth).
+**Correctness pass (2026-09, external audit).** Fixed real bugs, all verified + pushed:
+(1) P2 KKT sign — was `(R−W)f = a_u+aref` (residual `−2·a_c`, passed only at a settled state);
+corrected to `(W+R)f = aref−a_u` and now tested at a transient too (`premises_final.py`,
+`p2_frictionless.py`). (2) `cross_embodiment_v2.py` added a static compliance `1/k` to an
+inverse inertia — now `C⁻¹=1/(k·h²)` (consistent 1/kg). (3) covering verdicts now GATE on the
+bound-violation fraction. (4) `hetero_covering.py` ground truth (staircase→ramp) fixed → the
+learned-field covering **flipped to NEGATIVE**: RBF-KRR mean-reverts under extrapolation
+(`μ̂=−0.27`), violates the bound 100%; the covering GEOMETRY still holds. Docs (README §14,
+outputs/RESULTS.md) now mark exact-by-construction / synthetic / privileged-info results.
+**Open honest boundaries:** learned-field covering needs a Lipschitz-respecting estimator;
+`z_local` still ingests true `μ/solref/solimp` (leakage — must become hidden/targets before
+training `C_θ`); `Y_G` is the instantaneous (not closed-loop) port; everything within-simulator.
+**Next proposed:** sim-to-real stress test (`ε_C` predicts mismatched-model degradation); then
+train `C_θ` with a de-leaked dataset + a Lipschitz-respecting field learner.

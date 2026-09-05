@@ -19,9 +19,12 @@
 - **Hard rules:** only touch the `namanjain4463/Thesis` repo; develop on branch
   `claude/lynxmotion-cube-picker-controller-9umls9`; commit + push as work lands
   (containers are ephemeral); Isaac cylinder mass ≤ 0.1 kg. (Full rules in `CLAUDE.md`.)
-- **Status:** all core math validated *within simulator* against MuJoCo ground truth.
-  The certificate now carries both hardware error sources (`ε_Y`, `ε_C`). Next build:
-  a genuine sim-to-real stress test (see §10).
+- **Status (within-simulator):** the load-bearing identities hold — P1 coupling (`1e-16`), the
+  corrected P2 KKT (settled *and* transient), the exact port split (`1e-17`), the covering
+  *geometry* and the *physical*-field bound (0%, gated). Honest boundaries: the covering law on
+  a *learned* field does **not** yet hold (RBF-KRR extrapolation), `C_θ` is **not trained**, and
+  `Y_G` is the instantaneous (not closed-loop) port. Read **§14** before quoting any result.
+  Next build: a genuine sim-to-real stress test (see §10).
 
 ---
 
@@ -115,24 +118,33 @@ $$
 Y_{object}^{nn} = \tfrac{1}{m} + (r\times n̂)^{\top} I_{obj}^{-1} (r\times n̂)
 $$
 
-  At a mid-height side contact (`r×n̂ = 0`) this is `1/m`. **Validated:** `= 20.0` for the
-  *same object* under **both** the floating gripper and the Panda, to `3.5e-15` — i.e.
-  embodiment-invariant at matched geometry.
+  At a mid-height side contact (`r×n̂ = 0`) this is `1/m`. **Confirmed** `= 20.0` for the
+  *same object* under **both** the floating gripper and the Panda, to `3.5e-15`. Note this
+  invariance is **exact by construction** — `Y_object` is computed from the object body's own
+  Jacobian, which carries no arm DOFs — so the numeric match confirms the *implementation*, not
+  a learned transfer. The physically substantive fact is the exact **split** below (MuJoCo's
+  real `M` is block-diagonal between object and arm DOFs to `~1e-17`), which is a genuine
+  numerical identity, not a tautology.
 - `Y_robot` is the arm's reflected inverse inertia (the port). Measured `8.98` (Panda) vs
   `33.33` (floating) at the same contact — this is where the embodiment lives.
 
 ### 3.4 The convex contact solve (constitutive law ↔ force)
 
-MuJoCo's contact force is the stationary point of a strictly-convex program. In the clean
-frictionless case we verified the exact KKT to `3.2e-14`:
+MuJoCo's contact force is the stationary point of a strictly-convex program. The exact
+active-constraint KKT stationarity in the clean frictionless case is
 
 $$
-(R - W)\,f \;=\; J_c\,q̈_s + a_{ref}, \qquad \text{equivalently}\quad \underbrace{J_c q̈ + a_{ref}}_{\text{jar}} = R f
+(W + R)\,f \;=\; a_{ref} - J_c\,q̈_s, \qquad \text{equivalently}\quad R f = a_{ref} - J_c q̈
 $$
 
-where `R = diag(efc_R)` is the **local compliance** and `a_{ref} = efc_aref` the **local
-reference** — both per-contact functions of `{penetration, v_n, solref, solimp}`, i.e. of
-`z_local`. Our thesis solve uses the strictly-convex SAP-style form
+(`a_u := J_c q̈_s` is the unconstrained contact acceleration.) Verified to machine precision at
+a **settled** *and* a **transient (accelerating-contact)** state — settled `1.6e-15`, transient
+`1.8e-16`. The transient is essential: the wrong-sign form `(R−W)f = a_u+a_ref` has residual
+exactly `−2·a_c` (`a_c = J_c q̈`), so it passes for *any* sign at a settled state where `a_c≈0`.
+An earlier version wrote that wrong sign and tested only the settled box, so P2 passed
+vacuously; the corrected test falsifies the sign (old sign → transient residual `5e-2`). Here
+`R = diag(efc_R)` is the **local compliance** and `a_{ref} = efc_aref` the **local reference** —
+both per-contact functions of `{penetration, v_n, solref, solimp}`, i.e. of `z_local`. Our thesis solve uses the strictly-convex SAP-style form
 `λ* = argmin_{λ∈FC} ½λᵀ(W+R)λ + qᵀλ` with `A = W+R ≻ 0` (unique). **The force is not a
 local function of kinematics** — it is the solve's output; that non-locality is *why* the
 analytical `W`-solve is needed. We verified the **implicit gradient** through this solve
@@ -144,9 +156,12 @@ $$
 H_e = \left(Y_e + C^{-1}\right)^{-1}, \qquad H_e^{-1} - Y_e = C^{-1}\ \text{(embodiment-independent)}
 $$
 
-Verified in the frequency domain across two embodiments to `1e-17`: raw response `|H_e|`
-differs wildly across bodies, but `H_e^{-1} - Y_e` recovers the **same** interface law.
-This is the falsifiable pre-training invariance.
+In the frequency-domain check (`verify_math.py` V1) this holds to `1e-17` — but that check
+**constructs** `H_e = (Y_e + Y_c)^{-1}` and then recovers `Y_c`, so the `1e-17` is an *exact
+algebraic identity / implementation check*, not independent evidence. The **falsifiable**
+content is the same quotient applied to `H` and `Y` that are *independently* obtained: the
+exact port split (§3.3) and the free-space port ID (§3.11). Stated plainly: the algebra is
+correct; the empirical claim rests on the split and the ID, not on this synthetic recovery.
 
 ### 3.6 Transfer certificate (now two-source)
 
@@ -162,8 +177,15 @@ $$
 - `m` = interface conditioning (a stiff, well-conditioned grasp tolerates more error; a
   soft/near-singular one amplifies it).
 
-**Validated:** same `ε` gives ~20–200× larger outcome error on an ill-conditioned
-embodiment than a well-conditioned one; the two error sources **add** inside one bound.
+This is the standard resolvent perturbation inequality (a genuine theorem, not fitted). It is
+demonstrated on synthetic SPD interfaces (`verify_math.py` V3, `port_identification.py` Part D)
+and on the two identified real-arm ports (`cross_embodiment_v2.py`) — where the contact term is
+now composed in consistent accelerance units `C^{-1}=1/(k h²)` (an earlier version added a
+static compliance `1/k` to an inverse inertia, a dimensional error that made the contact term
+numerically negligible). Same `ε` gives ~20–200× larger outcome error on an ill-conditioned
+embodiment than a well-conditioned one; the two error sources **add** inside one bound. Note the
+bound is verified on *synthetic and analytically-identified* ports, not yet on a *learned* `C_θ`
+or a hardware-identified `Y_G`.
 
 ### 3.7 Internal-force nullspace (sensing limit)
 
@@ -212,11 +234,27 @@ $$
 
 `L` = field Lipschitz constant, `dist` = geodesic fill-distance on the surface, `C` = a
 **field-independent geometry constant** (the sampling Lebesgue constant). Matched geometry
-(`dist=0`) recovers the exact case. **Validated on real supports from both arms:** error
-`∝ L` (`slope/L = 1.389 ± 0.0%` over a 10× range of `L`), `err/L` collapses onto one
-universal law (`R²=0.95`), and **covering distance predicts cross-embodiment transfer error
-(228× worse when body B contacts a surface band body A never trained on)**. Re-validated on
-a *genuinely learned* material field `μ(z)` measured from sliding physics.
+(`dist=0`) recovers the exact case. What is and is not established (on real supports from both
+arms):
+
+- **Bound holds when stated correctly.** The physical field `Y_object(z)` obeys
+  `|ĝ−g| ≤ ε_learn + C·L·dist` with **0% violation** (`C=1.389` from the controlled family,
+  `L` analytic, `ε_learn` the in-support ceiling — all fixed independently of the physical
+  field). An earlier version tested it with `C=1` and an under-set `ε`, spuriously reporting
+  "6.2% violated" while the verdict ignored it; the verdict now **gates** on the bound.
+- **The `slope/L = 1.389 ± 0.0%` "collapse across L" is not independent evidence.** For a
+  *linear* learner (KRR) on a *linearly*-scaled field `g=L·z`, error scales exactly `∝ L` by
+  construction — hence the `±0.0%`. The substantive axis is the dependence on covering
+  **distance** and the field-independent constant `C`, not the `L`-scaling.
+- **Covering distance predicts cross-embodiment transfer (directionally):** `228×` more error
+  when the Panda contacts a surface band the floating gripper never trained on.
+- **On a genuinely *learned* RBF friction field `μ(z)`, the bound does NOT hold** (open item).
+  With the ground truth corrected (see §14), RBF-KRR **mean-reverts under extrapolation**
+  (predicting `μ̂=−0.27`, negative friction, past the training band) and violates
+  `ε+C·L·dist` on ~100% of out-of-support points. The covering *geometry* is sound (a
+  Lipschitz-consistent estimator obeys the bound at all distances, `0%`), so this is a
+  **learner** limitation: demonstrating learned-field covering needs a Lipschitz-respecting
+  estimator, not RBF-KRR extrapolation.
 
 ### 3.10 Graspability as a certificate
 
@@ -227,9 +265,13 @@ $$
 \gamma_{fric} = \mu - \mu_{req}, \quad \mu_{req} = \frac{m g}{\sum_i F_n^{\,i}}
 $$
 
-Graspable iff all margins positive; the negative margin **names the reason**. **Validated:
-100% (8/8)** over a shape battery (cylinder, sphere, box, ellipsoid, wide box, weak-grip
-cases) — wide box → kinematic; slick/heavy weak-grip → friction cone.
+Graspable iff all margins positive; the negative margin **names the reason**. Agrees with the
+actual lift on **8/8** curated cases (cylinder, sphere, box, ellipsoid, wide box, weak-grip) —
+wide box → kinematic; slick/heavy weak-grip → friction cone. **Caveat (scope):** `μ_req` uses
+the *measured post-contact* normal force `ΣF_n`, so this is a **consistency check** evaluated
+*after* the grasp is realized, not an *a-priori* screen. A deployable gate must instead
+*predict* `ΣF_n` from the squeeze command + contact model; and 8 hand-picked cases is a spanning
+demonstration, not a statistical accuracy.
 
 ### 3.11 Free-space separation principle (port identification)
 
@@ -238,11 +280,20 @@ identifies `Y_robot` **uncontaminated by `C_θ`**, making the blind Y/C deconvol
 well-posed. Two facts:
 
 - From contact `H = (Y+C^{-1})^{-1}` **alone**, `(Y,C)` is a **gauge family** (any `Y'` fits
-  with a compensating `C'` — verified: `‖H'−H‖ ~ 3e-19`). Free-space `Y` makes `C` unique.
+  with a compensating `C'` — `‖H'−H‖ ~ 3e-19`). Free-space `Y` makes `C` unique. *(This is a
+  synthetic linear-algebra demonstration of the identifiability principle, not a data result.)*
 - The naive rigid-body port `J M^{-1} J^{\top}` can be badly wrong: for the Panda it is
   **94% off** because the finger **tendon** is a real structural coupling. Free-space ID
   recovers the true (constrained) port. **You identify `Y`, you do not assume it.**
   `ε_Y` scales ~linearly with endpoint-sensor noise.
+
+**Caveat (what is identified).** The identified port is the **instantaneous, open-loop**
+mobility: a *known* generalized force is applied and `mj_forward`'s instantaneous `q̈` is read,
+so the "ID vs true port" match (`2.6e-17`) is the *same* forward-dynamics computation and is
+near-tautological — the informative result is the 94% tendon gap. On hardware you get neither a
+known pure endpoint wrench (you need an instrumented/known-wrench setup) nor the instantaneous
+rigid port: the deployable `Y_G` is the **closed-loop** endpoint admittance (servo + latency),
+which is **not yet identified** (§10, §14).
 
 ---
 
@@ -256,14 +307,18 @@ well-posed. Two facts:
   proprioception-resolution condition (`ker O ⊆ ker P_τ`, defect `β_τ`). The facts are
   classical grasp mechanics; the *learning-theoretic packaging as a transfer admissibility
   test* is novel.
-- **(Quotient) Admittance-quotient invariance** `H_e^{-1} - Y_e = C^{-1}`: the falsifiable,
-  pre-training embodiment quotient. Novel in specifics; must be distinguished from
-  compositional port-Hamiltonian learning in the writeup.
-- **(New this line of work) The surface-covering law**: recasting embodiment transfer as
+- **(Quotient) Admittance-quotient invariance** `H_e^{-1} - Y_e = C^{-1}`: the pre-training
+  embodiment quotient. The algebra is exact by construction; its empirical weight comes from
+  the exact port split (§3.3) and free-space port ID (§3.11), where `H` and `Y` are obtained
+  independently. Novel in specifics; must be distinguished from compositional port-Hamiltonian
+  learning in the writeup.
+- **(New this line of work) The surface-covering *geometry***: recasting embodiment transfer as
   scattered-data approximation on the object surface, with a certificate computable from
-  contact geometry alone. This dissolves the matched-geometry assumption and handles
-  different finger counts / patch shapes / bimanual / humanoid as different measures on one
-  field.
+  contact geometry alone. This dissolves the matched-geometry assumption and handles different
+  finger counts / patch shapes / bimanual / humanoid as different measures on one field. The
+  geometry and the physical-field bound are validated; the covering bound on a *learned* field
+  is **not yet** established (RBF-KRR extrapolation violates it — §3.9, §14), and is the open
+  learning-theoretic item.
 
 **Falsifiable prediction (RQ1):** `C_θ` should **not** need the self-inertia block `W_ii`
 (the constitutive law is inertia-independent). `W_ii` is logged separately from the strict
@@ -277,15 +332,15 @@ well-posed. Two facts:
 |---|---|---|---|
 | 1 | `contact_probe.py` | `W` assembly = ground truth | `W` vs `mj_solveM` = 0.0; ΣFn = weight |
 | 2 | `z_local_schema.py` | frozen 27-D embodiment-agnostic feature schema | `κ_obj = 1/r` exact |
-| 3 | `premises_final.py` | pre-embodiment GATE (P1/P2/P3) | P1 `1e-16`, P2 frictionless KKT `1e-15`, P3 contamination ~linear |
+| 3 | `premises_final.py` | pre-embodiment GATE (P1/P2/P3) | P1 `1e-16`; P2 KKT `(W+R)f=aref−a_u` settled `1.6e-15` / **transient** `1.8e-16`; P3 ~linear |
 | 4 | `verify_solve.py` | implicit gradient through the solve | err `1e-12` |
-| 5 | `verify_math.py` | quotient invariance / nullspace / certificate | `1e-17` / rank test / conditioning 210× |
+| 5 | `verify_math.py` | quotient / nullspace / certificate | quotient `1e-17` (exact *by construction*); nullspace rank test; certificate cond. 210× (synthetic) |
 | 6 | `panda_embodiment.py` | 2nd real embodiment (Franka) grasps + lifts | schema-identical `z_local`, 0 NaN on pads |
 | 7 | `cross_embodiment_v2.py` | exact port split + `Y_object` invariance + certificate | split `1e-17`, `Y_object=20.0` Δ`3.5e-15` |
-| 8 | `surface_field_covering.py` | **covering law** on real supports | slope/L `1.389±0%`, R² `0.95`, cross-embodiment `228×` |
-| 9 | `hetero_covering.py` | covering law on a **learned** material field | in-support `0.02`, slope `10` vs L `9` |
-| 10 | `graspability.py` | graspability = named margins | **100% (8/8)** |
-| 11 | `port_identification.py` | free-space `ε_Y` + two-source certificate | Panda naive port 94% wrong; bound holds |
+| 8 | `surface_field_covering.py` | **covering geometry** on real supports | physical-field bound `0%` violated (gated); cross-embodiment `228×`; slope/L `1.389` is a linear-learner identity, not evidence |
+| 9 | `hetero_covering.py` | covering on a **learned** field | **NEGATIVE**: RBF-KRR mean-reverts (`μ̂=−0.27`), violates bound `100%`; geometry OK (Lipschitz-consistent est. `0%`) |
+| 10 | `graspability.py` | graspability = named margins | 8/8 curated (uses **post-contact** `ΣF_n` → consistency check, not a-priori screen) |
+| 11 | `port_identification.py` | free-space `ε_Y` + two-source certificate | Panda naive port 94% wrong (real); ID is **instantaneous open-loop** (closed-loop `Y_G` open) |
 
 **Why this order.** We validated the *load-bearing identity* (P1) before anything built on
 it; got *one* embodiment fully working and visually verified (rendered filmstrips) before
@@ -436,10 +491,32 @@ Runtime notes: MuJoCo 3.12.0; headless render `MUJOCO_GL=osmesa`; Panda needs
 
 1. All validation is **within-simulator**; sim-to-real (`ε_C`) is not yet tested against a
    mismatched model.
-2. `Y_G` is currently the rigid-body/constrained port; the **closed-loop controller-shaped**
-   port on real hardware is not yet identified.
-3. `C_θ` is **not yet trained** — the covering law and certificate are validated on the
-   analytical/measured fields and controlled stand-ins, not a learned network (that is a
-   roadmap item, and the pipeline + implicit gradient are ready for it).
-4. The **camera-only Lynxmotion cannot observe internal force** — this is a fundamental
-   limit the certificate must respect by rejecting force-critical tasks.
+2. `Y_G` is currently the rigid-body/constrained **instantaneous** port; the **closed-loop
+   controller-shaped** port on real hardware is not yet identified, and the port ID uses a
+   *known* applied wrench (an instrumented setup is needed on hardware).
+3. `C_θ` is **not yet trained**. The certificate is verified on synthetic + analytically-
+   identified ports; the covering *geometry* and the *physical* field bound hold — but there is
+   no learned-network result yet (pipeline + implicit gradient are ready).
+4. The **camera-only Lynxmotion cannot observe internal force** — a fundamental limit the
+   certificate must respect by rejecting force-critical tasks.
+5. **Covering law on a *learned* field is not established.** On the learned RBF friction field,
+   the KRR estimator mean-reverts under extrapolation (`μ̂=−0.27`) and violates
+   `ε+C·L·dist` on ~100% of out-of-support points. The covering *geometry* is sound (a
+   Lipschitz-consistent estimator obeys the bound); a Lipschitz-respecting learner is the open
+   item. (An earlier "hetero HOLDS 5.8%" was an artifact of a staircase-vs-ramp ground-truth
+   mismatch plus a verdict that did not gate on violations — both now fixed.)
+6. **`z_local` contains non-deployable inputs.** It includes the *true* `μ, solref, solimp`
+   (MuJoCo constitutive parameters) as input features. These are **not observable by the D455**,
+   and supplying true friction as an input is **leakage** for any task that claims to *infer*
+   friction. Before training `C_θ`, the deployment observation model must move `μ/solref/solimp`
+   to hidden/targets and split by trial (grouping ids exist), not by contact row.
+7. **Several "exactness" results are exact by construction / synthetic**, i.e. implementation
+   checks, not evidence of learned transfer: the `Y_object` cross-embodiment identity (object
+   Jacobian carries no arm DOFs), the `H^{-1}−Y=C^{-1}` quotient (built from `Y+C`), and the
+   `Y/C` gauge demonstration.
+8. **The covering-law `slope/L` collapse across `L` is not independent evidence** — it follows
+   by construction from a linear learner on a linearly-scaled field. The substantive content is
+   the dependence on covering *distance* and the field-independent constant `C`.
+9. **Graspability uses privileged post-contact information** (`μ_req = mg/ΣF_n` with measured
+   `ΣF_n`) and a small curated battery — a consistency check, not an a-priori, statistically-
+   characterized screen.

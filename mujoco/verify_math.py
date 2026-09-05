@@ -30,7 +30,10 @@ for w in [1, 10, 50, 200, 1000]:
     print("  %5d   %9.5f   %9.5f        %.2e               %.2e" % (w, abs(hA), abs(hB), eA, eB))
 print("  --> |H_e| (raw observed response) differs a lot across embodiments,")
 print("      but H_e^-1 - Y_e recovers the SAME interface Y_c.  max err = %.2e" % maxerr)
-print("  VERDICT: the quotient is EXACT (this is the falsifiable pre-training test).")
+print("  VERDICT: the quotient identity is EXACT here BY CONSTRUCTION (H_e is built from")
+print("           Y_e + Y_c, then Y_c recovered) -- an implementation check, not a data test.")
+print("           The FALSIFIABLE content is the same quotient on INDEPENDENTLY-obtained H,Y")
+print("           (the exact port split + free-space port ID), not this synthetic recovery.")
 
 print("\n" + "="*72)
 print("V2  INTERNAL-FORCE NULLSPACE  and  PROPRIOCEPTION")

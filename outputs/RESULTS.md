@@ -6,16 +6,23 @@ below shows the figure (where one is produced) and the **verbatim console output
 are the numeric results quoted in the root `README.md`. Regenerate with e.g.
 `python ../mujoco/surface_field_covering.py`.
 
+> **Correctness pass (2026-09).** Following an external audit, these were corrected: the P2
+> KKT sign (it passed vacuously at a settled state), the cross-embodiment contact-term units,
+> the covering-law verdicts (now gate on the bound-violation fraction), and the hetero
+> ground-truth (staircase-vs-ramp). The hetero covering result **flipped to negative** (RBF-KRR
+> mean-reverts under extrapolation). Per-section caveats below mark results that are
+> exact-by-construction / synthetic / privileged-information. See root `README.md` §14.
+
 ## Pre-embodiment gate (P1/P2/P3)
 
-The three load-bearing premises on real grasp data: P1 coupling identity (~1e-16), P2 local/global split via the frictionless KKT (~1e-15), P3 model-error budget (~linear).
+The three load-bearing premises on real grasp data: P1 coupling identity (~1e-16); P2 local/global split via the corrected frictionless KKT `(W+R)f = aref − a_u`, now checked at a **settled and a transient** state (the old `(R−W)f` sign passed only vacuously at `a_c≈0`); P3 model-error budget (~linear).
 
 ```text
 ======================================================================
 PRE-PANDA GATE  (Factorized Interaction World Model premises)
 ======================================================================
  P1 coupling identity   : residual median=3.8e-16 max=5.6e-08   -> PASS
- P2 local/global split  : frictionless KKT resid=1.7e-15  weight err=2.9e-15 N -> PASS
+ P2 local/global split  : frictionless KKT (W+R)f=aref-a_u  settled=1.6e-15  transient=1.8e-16  weight err=2.9e-15 N -> PASS
       (force IS non-local: Fn~[pen,vn] R²=0.06 on 342 friction samples — EXPECTED,
        the coupling is exactly the analytical W-solve; local law inputs R,aref,μ ∈ z_local)
  P3 model-error budget  : contamination 2%->1.5%  5%->4.0%  10%->8.0%  -> PASS
@@ -27,7 +34,7 @@ PRE-PANDA GATE  (Factorized Interaction World Model premises)
 
 ## Cross-embodiment port split + certificate
 
-Exact split W = Y_object + Y_robot (~1e-17); Y_object embodiment-invariance at matched geometry (=20.0, delta 3.5e-15); transfer certificate on the two real arms.
+Exact split W = Y_object + Y_robot (~1e-17, a genuine numerical identity); Y_object cross-embodiment match (=20.0, delta 3.5e-15) is **exact by construction** (object Jacobian carries no arm DOFs). The certificate now composes the contact term in consistent accelerance units `C⁻¹=1/(k·h²)` — an earlier version added a static compliance `1/k` (m/N) to an inverse inertia (1/kg), a dimensional error that also made the contact term ~5 orders too small (hence the old identical H across all k). With the fix the contact term participates and the bound still HOLDS.
 
 ```text
 ========================================================================
@@ -48,9 +55,10 @@ MATCHED-GEOMETRY PORT ADMITTANCE  (identical object-frame contact)
 ========================================================================
 TRANSFER CERTIFICATE  (matched single-normal port)
 ========================================================================
-  k_contact=  1500  cinv=6.67e-04  H_panda=3.451e-02 H_float=1.875e-02  frozen-transfer|ΔH|=1.576e-02  bound=1.816e-01  HOLDS
-  k_contact=  3000  cinv=3.33e-04  H_panda=3.451e-02 H_float=1.875e-02  frozen-transfer|ΔH|=1.576e-02  bound=1.816e-01  HOLDS
-  k_contact=  8000  cinv=1.25e-04  H_panda=3.451e-02 H_float=1.875e-02  frozen-transfer|ΔH|=1.576e-02  bound=1.816e-01  HOLDS
+  discrete-step contact accelerance  C⁻¹ = 1/(k·h²),  h = 0.0020 s (sim timestep)
+  k_contact=  1500 N/m  C⁻¹=1.67e+02 1/kg  H_panda=5.111e-03 H_float=4.545e-03  frozen-transfer|ΔH|=5.658e-04  bound=7.267e-04  HOLDS
+  k_contact=  3000 N/m  C⁻¹=8.33e+01 1/kg  H_panda=8.904e-03 H_float=7.317e-03  frozen-transfer|ΔH|=1.587e-03  bound=2.465e-03  HOLDS
+  k_contact=  8000 N/m  C⁻¹=3.12e+01 1/kg  H_panda=1.660e-02 H_float=1.182e-02  frozen-transfer|ΔH|=4.780e-03  bound=1.127e-02  HOLDS
   yo=20.0000 (invariant)  yr_panda=8.9803  yr_float=33.3333
 
  THESIS-LEVEL READ:
@@ -64,7 +72,7 @@ TRANSFER CERTIFICATE  (matched single-normal port)
 
 ## Surface-field covering law (headline)
 
-Contact law as a field, embodiment as a sampling measure. error = C*L*dist; slope/L = 1.389 +/- 0%, err/L collapse R^2=0.95, covering distance predicts cross-embodiment transfer 228x.
+Contact law as a field, embodiment as a sampling measure. **Physical-field bound `|ĝ−g| ≤ ε_learn + C·L·dist` holds with 0% violation** (the verdict now gates on this; the old "6.2% violated" was an artifact of testing `C=1` with an under-set `ε`). Covering distance predicts cross-embodiment transfer **228×** (directional). **Caveat:** `slope/L = 1.389 ± 0.0%` is a *linear-learner identity* (KRR on `g=L·z` scales error `∝ L` by construction), not independent evidence — the substantive axes are covering *distance* and the field-independent constant `C`. The *learned*-field instance is a separate, **negative** result (next section).
 
 ![Surface-field covering law (headline)](surface_field_covering.png)
 
@@ -77,7 +85,7 @@ collecting real contact supports from two embodiments (shared cylinder)...
 PART 1  COVERING LAW   train on lower band (z<=-0.005, n=66), test on all (n=210)
   claim:  |ĝ−g| ≤ ε_learn + L·dist   (upper bound; matched geometry dist=0 ⇒ exact)
 ======================================================================
- PHYSICAL Y_object(z):  in-support err=5.86e-04   bound(ε+L·dist) violated on 6.2% of pts   L_max=2320
+ PHYSICAL Y_object(z):  in-support err mean=5.86e-04 (ε_learn=3.37e-03)   L=2320  (bound audited below with C)
  CONTROLLED g_L(z)=L·z:   envelope slope should track L; error/L collapses vs dist
    L=  50.0   in-support err=2.81e-05   envelope slope=  69.5  (slope/L=1.389)
    L= 125.0   in-support err=7.02e-05   envelope slope= 173.7  (slope/L=1.389)
@@ -87,6 +95,8 @@ PART 1  COVERING LAW   train on lower band (z<=-0.005, n=66), test on all (n=210
       => error = C·L·dist with C=1.39 (the sampling-geometry amplification / Lebesgue const),
          field-independent. This IS the covering law: error ∝ L, ∝ covering distance.
       collapse: err/L vs dist across all L  ->  R²(err/L = C·dist) = 0.9532  (1.0 = one universal law)
+  BOUND AUDIT (physical Y_object):  |ĝ−g| ≤ ε_learn + C·L·dist  [ε=3.4e-03, C=1.39, L=2320]
+      violated on 0.0% of points  ->  HOLDS
 
 ======================================================================
 PART 2  CROSS-EMBODIMENT   field trained on FLOATING, applied to PANDA contacts
@@ -97,28 +107,32 @@ PART 2  CROSS-EMBODIMENT   field trained on FLOATING, applied to PANDA contacts
 
 wrote surface_field_covering.png
 
-VERDICT: covering law HOLDS — (i) in-support error ≈0 and ∝L, (ii) error = C·L·dist with a field-independent geometry constant C=1.39, (iii) covering distance predicts cross-embodiment transfer (228×). Matched geometry (dist=0) recovers the exact case.
+VERDICT: covering law HOLDS — (i) in-support error ≈0 and ∝L, (ii) error = C·L·dist with a field-independent geometry constant C=1.39 and the physical-field bound violated on 0.0% of points, (iii) covering distance predicts cross-embodiment transfer (228×). Matched geometry (dist=0) recovers the exact case.
 ```
 
 ---
 
 ## Covering law on a LEARNED material field
 
-Height-varying friction mu(z) baked into physics; field learned from sliding contacts. In-support error 0.02; out-of-support slope 10 vs true L=9.
+Height-varying friction mu(z) baked into physics; field learned from sliding contacts. **NEGATIVE result (corrected).** The old "HOLDS 5.8%" was propped up by a ground-truth mismatch (segments used friction `k/(K-1)` but were scored against the continuous ramp `(z+H/2)/H` — they agree only at the middle segment) plus a verdict that did not gate on violations. Fixed: segments now **sample the ramp at their center** and `K` refined 8→24. With honest ground truth, the covering *distance/bound* is confirmed (a Lipschitz-consistent estimator obeys `ε+C·L·dist` at 0%), but **RBF-KRR mean-reverts under extrapolation** (predicting `μ̂=−0.27`, negative friction, past the training band) and violates the bound on ~100% of out-of-support points. So covering on a *learned* field is an open item requiring a Lipschitz-respecting estimator — not RBF-KRR extrapolation. See the left figure panel: the learned μ̂ (red) dives away from the true ramp past the split.
 
 ![Covering law on a LEARNED material field](hetero_covering.png)
 
 ```text
 collecting learned friction-field samples μ_obs(z) from sliding physics...
-  2339 sliding samples   z∈[-0.043, 0.050]   μ_obs∈[0.10,1.00]
+  5166 sliding samples   z∈[-0.042, 0.050]   μ_obs∈[0.16,0.98]
 
 ==================================================================
-COVERING LAW on the LEARNED material field μ(z)  (train z<=0.012)
+COVERING LAW on the LEARNED material field μ(z)  (train z<=0.017)
 ==================================================================
-  in-support |μ̂−μ| median = 0.020   (learned field matches true μ where sampled)
-  out-of-support error grows with covering distance: slope=10.03  (field L=9.0)
-  bound err ≤ C·L·dist with C≈1.4:  violated on 5.8% of out-of-support pts
-  => covering law HOLDS on a LEARNED, physically-measured heterogeneous field.
+  in-support |μ̂−μ| median = 0.007  (ε_learn=95th pct = 0.032)   (RBF-KRR matches true μ where sampled)
+  out-of-support error slope=29.35 vs field L=9.0;  bound |μ̂−μ| ≤ ε_learn + C·L·dist (C≈1.4):
+    RBF-KRR estimator          : violated on 100.0% of out-of-support pts -> VIOLATED
+    Lipschitz-consistent (ref) : violated on   0.0% of out-of-support pts -> HOLDS
+    diag: RBF-KRR min extrapolated μ̂=-0.27 (field min=0.10) -> it MEAN-REVERTS/undershoots,
+          so it does NOT extrapolate within the Lipschitz bound even near the support edge.
+  => covering DISTANCE/bound correctly computed: confirmed  (a Lipschitz-consistent estimator obeys ε+C·L·dist by construction, so the KRR violation is a genuine learner-extrapolation failure, not a metric artifact).
+     covering LAW on the LEARNED RBF field: PARTIAL/NEGATIVE — RBF-KRR mean-reverts under extrapolation and breaks the bound; a Lipschitz-respecting estimator is the open item.
 
 wrote hetero_covering.png
 ```
@@ -127,7 +141,7 @@ wrote hetero_covering.png
 
 ## Graspability certificate (shape battery)
 
-Graspability = named margins (gamma_kin, gamma_fric) from the friction-cone operators; 100% (8/8) vs actual lift, each rejection labelled by cause.
+Graspability = named margins (gamma_kin, gamma_fric) from the friction-cone operators; 8/8 curated cases vs actual lift, each rejection labelled by cause. **Caveat:** `μ_req = mg/ΣF_n` uses the *measured post-contact* normal force, so this is a consistency check *after* grasping, not an a-priori screen; a deployable gate must predict `ΣF_n`. 8 hand-picked cases is a spanning demo, not a statistical accuracy.
 
 ![Graspability certificate (shape battery)](graspability.png)
 
@@ -157,7 +171,7 @@ wrote graspability.png
 
 ## Free-space port ID + two-source certificate
 
-Free-space separation principle: identify Y_robot uncontaminated by C. Panda naive rigid-body port 94% wrong (tendon); gauge ambiguity; eps_Y ~ noise; two-source bound holds.
+Free-space separation principle: identify Y_robot uncontaminated by C. Panda naive rigid-body port 94% wrong (tendon — genuine); gauge ambiguity; eps_Y ~ noise; two-source bound holds. **Caveats:** the identified port is the **instantaneous, open-loop** mobility (a *known* applied wrench + `mj_forward` `q̈`), so the "ID vs true port" match (`2.6e-17`) is the same forward-dynamics computation (near-tautological) — the informative result is the 94% tendon gap; the deployable **closed-loop** `Y_G` is not yet identified. Part B (gauge family) and Part D (two-source bound) are synthetic linear-algebra demonstrations, not data results.
 
 ![Free-space port ID + two-source certificate](port_identification.png)
 
@@ -223,7 +237,7 @@ wrote panda_grasp_strip.png  final obj_z=0.600 (start 0.491)
 
 ## Port math checks (quotient / nullspace / certificate)
 
-V1 port-quotient invariance (~1e-17), V2 internal-force nullspace + proprioception rank test, V3 transfer certificate conditioning.
+V1 port-quotient identity (`~1e-17`, **exact by construction** — `H` is built from `Y+C`, so this is an implementation check, not a data test; the falsifiable content is the same quotient on independently-obtained `H,Y`). V2 internal-force nullspace + proprioception rank test. V3 transfer-certificate conditioning (the standard resolvent bound, on synthetic SPD interfaces).
 
 ```text
 ========================================================================
@@ -238,7 +252,10 @@ V1  PORT FACTORIZATION INVARIANCE  (frequency domain)
    1000     5.10692     5.10150        0.00e+00               2.86e-17
   --> |H_e| (raw observed response) differs a lot across embodiments,
       but H_e^-1 - Y_e recovers the SAME interface Y_c.  max err = 2.86e-17
-  VERDICT: the quotient is EXACT (this is the falsifiable pre-training test).
+  VERDICT: the quotient identity is EXACT here BY CONSTRUCTION (H_e is built from
+           Y_e + Y_c, then Y_c recovered) -- an implementation check, not a data test.
+           The FALSIFIABLE content is the same quotient on INDEPENDENTLY-obtained H,Y
+           (the exact port split + free-space port ID), not this synthetic recovery.
 
 ========================================================================
 V2  INTERNAL-FORCE NULLSPACE  and  PROPRIOCEPTION
