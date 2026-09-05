@@ -21,7 +21,10 @@ def seg_cylinder(r, H, K, mu_lo, mu_hi, mass, finger_mu=0.02, squeeze=2.0):
     segs=""
     for k in range(K):
         zc = -H/2 + (k+0.5)*H/K
-        mu = mu_lo + (mu_hi-mu_lo)*k/(K-1)
+        # sample the CONTINUOUS ramp at the segment CENTER so the piecewise material
+        # is a faithful discretization of mu_true(z) (was k/(K-1), which only matched
+        # the ramp at the middle segment -> a systematic staircase-vs-ramp offset).
+        mu = mu_lo + (mu_hi-mu_lo)*((zc + H/2)/H)
         segs += (f'<geom name="seg{k}" type="cylinder" size="{r} {H/(2*K)}" pos="0 0 {zc}" '
                  f'mass="{mass/K}" condim="3" friction="{mu} 0.005 0.0001"/>\n')
     oz = 0.20 + H/2 + 0.001
@@ -48,7 +51,7 @@ def seg_cylinder(r, H, K, mu_lo, mu_hi, mass, finger_mu=0.02, squeeze=2.0):
   <position name="arf" joint="rf" kp="300" kv="8" ctrlrange="0 0.035" forcerange="-{squeeze} {squeeze}"/>
  </actuator></mujoco>"""
 
-r, H, K = 0.025, 0.10, 8
+r, H, K = 0.025, 0.10, 24        # finer discretization: staircase→ramp mismatch << learning error
 MU_LO, MU_HI, MASS = 0.1, 1.0, 0.10
 def mu_true(z): return MU_LO + (MU_HI-MU_LO)*((z + H/2)/H)     # ground-truth ramp
 L_field = (MU_HI-MU_LO)/H                                       # Lipschitz of μ(z)
@@ -93,22 +96,47 @@ def krr(Xtr,ytr,Xte,ell=0.012,lam=1e-3):
     Dt=np.abs(Xte[:,None]-Xtr[None,:]); return mu+np.exp(-Dt**2/(2*ell**2))@a
 
 zc=np.percentile(z,45)
-tr=z<=zc
-zhat=krr(z[tr], mu_obs[tr], z)                       # learn from LOW band, predict all
+tr=z<=zc; ztr=z[tr]; mutr=mu_obs[tr]
+zhat=krr(ztr, mutr, z)                               # RBF-KRR: learn LOW band, predict all
 err=np.abs(zhat - mu_true(z))                        # error vs GROUND TRUTH μ(z)
+# reference estimator that RESPECTS the field's Lipschitz constant: value at the
+# nearest sampled height. By triangle ineq |μ̂−μ| ≤ ε_measure + L·dist, so it is the
+# yardstick for whether a VIOLATION is a covering-geometry failure or a learner one.
+jnear=np.argmin(np.abs(z[:,None]-ztr[None,:]),axis=1); mnear=mutr[jnear]
+err_lip=np.abs(mnear - mu_true(z))
 cov=np.array([0.0 if zz<=zc else zz-zc for zz in z]) # covering distance to train band (upper side)
 insup=err[cov<1e-4]; out=cov>1e-3
 print("\n" + "="*66)
 print("COVERING LAW on the LEARNED material field μ(z)  (train z<=%.3f)"%zc)
 print("="*66)
-print("  in-support |μ̂−μ| median = %.3f   (learned field matches true μ where sampled)"%np.median(insup))
+eps_learn = float(np.percentile(insup, 95)) if len(insup) else 0.0   # robust in-support ceiling
+print("  in-support |μ̂−μ| median = %.3f  (ε_learn=95th pct = %.3f)   (RBF-KRR matches true μ where sampled)"
+      %(np.median(insup), eps_learn))
+bound_holds = False
 if out.sum()>3:
+    def bound_viol(e): return float(np.mean(e[out] > eps_learn + 1.4*L_field*cov[out] + 1e-9))
     slope=np.polyfit(cov[out], err[out],1)[0]
-    print("  out-of-support error grows with covering distance: slope=%.2f  (field L=%.1f)"%(slope,L_field))
-    print("  bound err ≤ C·L·dist with C≈1.4:  violated on %.1f%% of out-of-support pts"
-          %(100*np.mean(err[out] > 1.4*L_field*cov[out] + np.median(insup)+1e-9)))
-print("  => covering law %s on a LEARNED, physically-measured heterogeneous field."
-      %("HOLDS" if (np.median(insup)<0.1 and out.sum()>3) else "inconclusive"))
+    viol_krr=bound_viol(err); viol_lip=bound_viol(err_lip)
+    bound_holds = viol_krr <= 0.02
+    print("  out-of-support error slope=%.2f vs field L=%.1f;  bound |μ̂−μ| ≤ ε_learn + C·L·dist (C≈1.4):"%(slope,L_field))
+    print("    RBF-KRR estimator          : violated on %5.1f%% of out-of-support pts -> %s"
+          %(100*viol_krr, "HOLDS" if bound_holds else "VIOLATED"))
+    print("    Lipschitz-consistent (ref) : violated on %5.1f%% of out-of-support pts -> %s"
+          %(100*viol_lip, "HOLDS" if viol_lip<=0.02 else "VIOLATED"))
+    print("    diag: RBF-KRR min extrapolated μ̂=%.2f (field min=%.2f) -> it MEAN-REVERTS/undershoots,"
+          %(float(zhat[out].min()), MU_LO))
+    print("          so it does NOT extrapolate within the Lipschitz bound even near the support edge.")
+# HONEST verdict: the covering GEOMETRY holds (a Lipschitz-consistent estimator obeys the
+# bound at all distances); the RBF-KRR LEARNER used here mean-reverts under extrapolation
+# and violates it -> the law is NOT demonstrated as a strict bound for THIS learner.
+metric_ok = (out.sum()>3 and bound_viol(err_lip) <= 0.02)
+print("  => covering DISTANCE/bound correctly computed: %s"
+      "  (a Lipschitz-consistent estimator obeys ε+C·L·dist by construction, so the"
+      " KRR violation is a genuine learner-extrapolation failure, not a metric artifact)."
+      %("confirmed" if metric_ok else "unconfirmed"))
+print("     covering LAW on the LEARNED RBF field: %s — RBF-KRR mean-reverts under"
+      " extrapolation and breaks the bound; a Lipschitz-respecting estimator is the open item."
+      %("HOLDS" if (np.median(insup)<0.1 and bound_holds) else "PARTIAL/NEGATIVE"))
 
 # figure
 fig,ax=plt.subplots(1,2,figsize=(11,4.4))

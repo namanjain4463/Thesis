@@ -16,9 +16,10 @@ MATCHED-GEOMETRY PORT ADMITTANCE  (identical object-frame contact)
 ========================================================================
 TRANSFER CERTIFICATE  (matched single-normal port)
 ========================================================================
-  k_contact=  1500  cinv=6.67e-04  H_panda=3.451e-02 H_float=1.875e-02  frozen-transfer|ΔH|=1.576e-02  bound=1.816e-01  HOLDS
-  k_contact=  3000  cinv=3.33e-04  H_panda=3.451e-02 H_float=1.875e-02  frozen-transfer|ΔH|=1.576e-02  bound=1.816e-01  HOLDS
-  k_contact=  8000  cinv=1.25e-04  H_panda=3.451e-02 H_float=1.875e-02  frozen-transfer|ΔH|=1.576e-02  bound=1.816e-01  HOLDS
+  discrete-step contact accelerance  C⁻¹ = 1/(k·h²),  h = 0.0020 s (sim timestep)
+  k_contact=  1500 N/m  C⁻¹=1.67e+02 1/kg  H_panda=5.111e-03 H_float=4.545e-03  frozen-transfer|ΔH|=5.658e-04  bound=7.267e-04  HOLDS
+  k_contact=  3000 N/m  C⁻¹=8.33e+01 1/kg  H_panda=8.904e-03 H_float=7.317e-03  frozen-transfer|ΔH|=1.587e-03  bound=2.465e-03  HOLDS
+  k_contact=  8000 N/m  C⁻¹=3.12e+01 1/kg  H_panda=1.660e-02 H_float=1.182e-02  frozen-transfer|ΔH|=4.780e-03  bound=1.127e-02  HOLDS
   yo=20.0000 (invariant)  yr_panda=8.9803  yr_float=33.3333
 
  THESIS-LEVEL READ:

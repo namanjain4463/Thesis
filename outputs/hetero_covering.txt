@@ -1,12 +1,16 @@
 collecting learned friction-field samples μ_obs(z) from sliding physics...
-  2339 sliding samples   z∈[-0.043, 0.050]   μ_obs∈[0.10,1.00]
+  5166 sliding samples   z∈[-0.042, 0.050]   μ_obs∈[0.16,0.98]
 
 ==================================================================
-COVERING LAW on the LEARNED material field μ(z)  (train z<=0.012)
+COVERING LAW on the LEARNED material field μ(z)  (train z<=0.017)
 ==================================================================
-  in-support |μ̂−μ| median = 0.020   (learned field matches true μ where sampled)
-  out-of-support error grows with covering distance: slope=10.03  (field L=9.0)
-  bound err ≤ C·L·dist with C≈1.4:  violated on 5.8% of out-of-support pts
-  => covering law HOLDS on a LEARNED, physically-measured heterogeneous field.
+  in-support |μ̂−μ| median = 0.007  (ε_learn=95th pct = 0.032)   (RBF-KRR matches true μ where sampled)
+  out-of-support error slope=29.35 vs field L=9.0;  bound |μ̂−μ| ≤ ε_learn + C·L·dist (C≈1.4):
+    RBF-KRR estimator          : violated on 100.0% of out-of-support pts -> VIOLATED
+    Lipschitz-consistent (ref) : violated on   0.0% of out-of-support pts -> HOLDS
+    diag: RBF-KRR min extrapolated μ̂=-0.27 (field min=0.10) -> it MEAN-REVERTS/undershoots,
+          so it does NOT extrapolate within the Lipschitz bound even near the support edge.
+  => covering DISTANCE/bound correctly computed: confirmed  (a Lipschitz-consistent estimator obeys ε+C·L·dist by construction, so the KRR violation is a genuine learner-extrapolation failure, not a metric artifact).
+     covering LAW on the LEARNED RBF field: PARTIAL/NEGATIVE — RBF-KRR mean-reverts under extrapolation and breaks the bound; a Lipschitz-respecting estimator is the open item.
 
 wrote hetero_covering.png

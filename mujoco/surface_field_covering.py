@@ -91,14 +91,16 @@ def envelope_slope(x, y):                                  # max error per unit 
     return float(np.max(y[good]/x[good])) if good.any() else 0.0
 
 results = {}
-# physical field: verify the bound with the field's own max Lipschitz
+# physical field: the covering bound is verified BELOW once C is measured from the
+# controlled family — the law is |ĝ−g| ≤ ε_learn + C·L·dist, so testing it with C=1
+# (as an earlier version did) is not the stated bound and spuriously "violates".
 ytr = field_phys(tr[:,1]); mdl = krr_fit(tr, ytr, ell)
 err = np.abs(krr_pred(mdl, te) - field_phys(te[:,1]))
-Lphys = 2*np.abs(te[:,1]).max()/I_trans
-viol = np.mean(err > 6e-4 + Lphys*d_te + 1e-9)
+Lphys = 2*np.abs(te[:,1]).max()/I_trans                     # field Lipschitz constant (global max)
+eps_phys = err[d_te<1e-3].max()                             # ε_learn = in-support error ceiling
 results["phys"] = (d_te, err, Lphys)
-print(" PHYSICAL Y_object(z):  in-support err=%.2e   bound(ε+L·dist) violated on %.1f%% of pts   L_max=%.0f"
-      %(err[d_te<1e-3].mean(), 100*viol, Lphys))
+print(" PHYSICAL Y_object(z):  in-support err mean=%.2e (ε_learn=%.2e)   L=%.0f  (bound audited below with C)"
+      %(err[d_te<1e-3].mean(), eps_phys, Lphys))
 
 # controlled LINEAR family g=L·z (no saturation) -> envelope slope must track L, error/L collapses
 print(" CONTROLLED g_L(z)=L·z:   envelope slope should track L; error/L collapses vs dist")
@@ -107,7 +109,8 @@ for L in [50.,125.,250.,500.]:
     ytr = field_lin(tr[:,1], L); mdl = krr_fit(tr, ytr, ell)
     err = np.abs(krr_pred(mdl, te) - field_lin(te[:,1], L))
     s = envelope_slope(d_te, err); slopes.append(s); Ls.append(L)
-    v = np.mean(err > 1e-6 + L*d_te + 1e-9)                # bound never violated
+    # bound |ĝ−g| ≤ ε + (slope/L)·L·dist holds by construction (slope=max err/dist);
+    # note err CAN exceed L·dist (C=1) — the covering constant C=slope/L>1 is required.
     results["lin_%d"%int(L)] = (d_te, err, L)
     collapse.append((d_te[out], err[out]/L))
     print("   L=%6.1f   in-support err=%.2e   envelope slope=%6.1f  (slope/L=%.3f)"
@@ -123,6 +126,17 @@ px = np.concatenate([d_te[out] for _ in [50.,125.,250.,500.]])
 py = np.concatenate([results["lin_%d"%int(L)][1][out]/L for L in [50.,125.,250.,500.]])
 fit = px*C; R2 = 1 - np.sum((py-fit)**2)/np.sum((py-py.mean())**2)
 print("      collapse: err/L vs dist across all L  ->  R²(err/L = C·dist) = %.4f  (1.0 = one universal law)"%R2)
+
+# ---- COVERING BOUND AUDIT on the physical field, using the law AS STATED ----
+# |ĝ−g| ≤ ε_learn + C·L·dist, with C the measured sampling constant and L the field
+# Lipschitz. (An earlier version tested C=1 with an under-set ε and reported 6.2%
+# spurious violations.) This is now a hard gate on the verdict.
+d_ph, err_ph, L_ph = results["phys"]
+phys_viol = float(np.mean(err_ph > eps_phys + C*L_ph*d_ph + 1e-9))
+phys_bound_holds = phys_viol <= 0.01
+print("  BOUND AUDIT (physical Y_object):  |ĝ−g| ≤ ε_learn + C·L·dist  [ε=%.1e, C=%.2f, L=%.0f]"
+      %(eps_phys, C, L_ph))
+print("      violated on %.1f%% of points  ->  %s"%(100*phys_viol, "HOLDS" if phys_bound_holds else "VIOLATED"))
 
 # ================= PART 2: cross-embodiment transfer, certified by covering =================
 print("\n" + "="*70)
@@ -148,14 +162,14 @@ fig, ax = plt.subplots(1, 3, figsize=(15,4.3))
 # (0) physical field: error under the L·dist bound
 d,e,L = results["phys"]
 ax[0].scatter(d*1000, e, s=14, c="#c02", alpha=.7, label="|ĝ−g| (real supports)")
-xx=np.linspace(0, d.max(),50); ax[0].plot(xx*1000, L*xx, "k--", lw=1, label="ε+L·dist bound")
+xx=np.linspace(0, d.max(),50); ax[0].plot(xx*1000, eps_phys + C*L*xx, "k--", lw=1, label="ε_learn+C·L·dist bound")
 ax[0].set_title("Physical field  Y_object(z)=1/m+z²/I\nerror stays under covering bound")
 ax[0].set_xlabel("surface covering distance to train support  [mm]"); ax[0].set_ylabel("|ĝ−g|"); ax[0].legend(fontsize=8)
 # (1) linear family error/L collapses vs distance, under y=dist
 cols=plt.cm.viridis(np.linspace(0,.85,len(collapse)))
 for (dd,ee),Lv,c in zip(collapse,Ls,cols):
     ax[1].scatter(dd*1000, ee, s=12, color=c, label="L=%.0f"%Lv, alpha=.7)
-xx=np.linspace(0, max(dd.max() for dd,_ in collapse),50); ax[1].plot(xx*1000, xx, "k--", lw=1, label="dist (bound)")
+xx=np.linspace(0, max(dd.max() for dd,_ in collapse),50); ax[1].plot(xx*1000, C*xx, "k--", lw=1, label="C·dist (envelope)")
 ax[1].set_title("Linear fields g=L·z:  error/L collapses\n(all bodies obey one covering law)")
 ax[1].set_xlabel("covering distance  [mm]"); ax[1].set_ylabel("|ĝ−g| / L"); ax[1].legend(fontsize=8)
 # (2) cross-embodiment: covering distance predicts transfer error
@@ -167,7 +181,10 @@ plt.tight_layout(); plt.savefig("surface_field_covering.png", dpi=95)
 print("\nwrote surface_field_covering.png")
 slope_tracks = Cspread < 0.05                               # slope/L constant ⇒ error ∝ L
 xembody = (e2/max(e1,1e-12)) > 20
+all_ok = slope_tracks and xembody and phys_bound_holds       # verdict now gates on the bound audit
 print("\nVERDICT: covering law %s"%("HOLDS — (i) in-support error ≈0 and ∝L, (ii) error = C·L·dist with a "
-      "field-independent geometry constant C=%.2f, (iii) covering distance predicts cross-embodiment transfer "
-      "(%.0f×). Matched geometry (dist=0) recovers the exact case."%(C, e2/max(e1,1e-12))
-      if (slope_tracks and xembody) else "PARTIAL — see per-check numbers above"))
+      "field-independent geometry constant C=%.2f and the physical-field bound violated on %.1f%% of points, "
+      "(iii) covering distance predicts cross-embodiment transfer (%.0f×). Matched geometry (dist=0) recovers "
+      "the exact case."%(C, 100*phys_viol, e2/max(e1,1e-12))
+      if all_ok else "PARTIAL — bound violated on %.1f%% of physical-field points (gate: ≤1%%); see numbers above"
+      %(100*phys_viol)))
