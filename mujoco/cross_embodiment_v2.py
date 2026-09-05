@@ -89,13 +89,20 @@ print("\n Y_object embodiment-invariance:  max|ΔY_object| over contacts = %.2e 
 print("\n"+"="*72); print("TRANSFER CERTIFICATE  (matched single-normal port)"); print("="*72)
 yo = float(rows[:,0].mean())                 # invariant object admittance
 yr_p = float(rows[:,1].mean()); yr_f = float(rows[:,3].mean())
+# UNITS: yo, yr = J M⁻¹Jᵀ are ACCELERANCES (force->acceleration, 1/kg). A contact
+# stiffness k (N/m) is a static compliance 1/k (m/N = s²/kg) and CANNOT be added to
+# an accelerance directly. Over a discrete step h the contact enters as the (W+R)
+# regularizer in accelerance units: C⁻¹ = 1/(k·h²)  [check: 1/(N/m·s²)=1/kg]. This is
+# the same (W+R) contact-solve structure used in premises P2; h from the sim timestep.
+h = float(mf.opt.timestep)
+print("  discrete-step contact accelerance  C⁻¹ = 1/(k·h²),  h = %.4f s (sim timestep)"%h)
 for kc in [1500.0, 3000.0, 8000.0]:
-    cinv = 1.0/kc
+    cinv = 1.0/(kc*h*h)                          # accelerance [1/kg], consistent with yo,yr
     Hp = 1.0/(yo+yr_p+cinv); Hf = 1.0/(yo+yr_f+cinv)
     eps = abs(yr_p-yr_f); mcond = yo+min(yr_p,yr_f)+cinv
     bound = eps/(mcond*(mcond-eps)) if mcond>eps else float('inf')
     actual = abs(Hp-Hf)
-    print("  k_contact=%6.0f  cinv=%.2e  H_panda=%.3e H_float=%.3e  frozen-transfer|ΔH|=%.3e  bound=%.3e  %s"
+    print("  k_contact=%6.0f N/m  C⁻¹=%.2e 1/kg  H_panda=%.3e H_float=%.3e  frozen-transfer|ΔH|=%.3e  bound=%.3e  %s"
           %(kc,cinv,Hp,Hf,actual,bound,"HOLDS" if actual<=bound+1e-12 else "VIOLATED"))
 print("  yo=%.4f (invariant)  yr_panda=%.4f  yr_float=%.4f"%(yo,yr_p,yr_f))
 print("\n THESIS-LEVEL READ:")

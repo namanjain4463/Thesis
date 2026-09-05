@@ -8,7 +8,10 @@ Run this before adding any second embodiment; it must print GO.
   P2  LOCAL/GLOBAL SPLIT  the contact force is the output of a convex solve whose
       data splits into analytical global W and LOCAL law (R,aref,μ ∈ z_local).
       Verified machine-exact in the frictionless case (no cone term):
-         (R - W) f = J qacc_s + aref .   Friction adds only the μ-cone term.
+         (W + R) f = aref - J qacc_s .   Friction adds only the μ-cone term.
+      Tested at a SETTLED and a TRANSIENT (accelerating-contact) state: the settled
+      state alone cannot falsify the sign — the wrong-sign residual equals -2·a_c,
+      which vanishes when the contact acceleration a_c=J·qacc is zero.
       Corollary (correctly): force is NOT a local function of kinematics (low R²);
       that non-locality is precisely why the analytical W-solve is needed.
   P3  MODEL-ERROR BUDGET  structured ΔM contaminates the extracted contact force
@@ -60,16 +63,33 @@ XML="""<mujoco><option gravity="0 0 -9.81" cone="elliptic" jacobian="dense" solv
  <geom type="plane" size="2 2 .1" friction="0 0 0"/>
  <body pos="0 0 .05"><freejoint/><geom type="box" size=".05 .05 .05" mass=".2" friction="0 0 0"/></body>
  </worldbody></mujoco>"""
+def p2_kkt_resid(mf, df):
+    """Relative residual of the active-constraint KKT stationarity
+       (W + R) f = aref - a_u,   a_u = J qacc_smooth  (unconstrained contact accel),
+    at the CURRENT state. Machine-zero iff the sign is right; the wrong sign gives
+    residual = -2·a_c (a_c=J·qacc), which only vanishes at a settled state."""
+    mujoco.mj_forward(mf, df)
+    nefc = int(df.nefc); J = np.array(df.efc_J).reshape(nefc, mf.nv)
+    W = J @ cp.Minv_apply(mf, df, J).T
+    R = np.array(df.efc_R[:nefc]); aref = np.array(df.efc_aref[:nefc])
+    f = np.array(df.efc_force[:nefc]); a_u = J @ np.array(df.qacc_smooth)
+    act = f > 1e-9
+    if not act.any(): return 0.0, f
+    rhs = aref - a_u
+    return float(np.linalg.norm(((W + np.diag(R)) @ f - rhs)[act]) /
+                 max(np.linalg.norm(rhs[act]), 1e-12)), f
+
 mf=mujoco.MjModel.from_xml_string(XML); df=mujoco.MjData(mf)
-for _ in range(2000): mujoco.mj_step(mf,df)
-mujoco.mj_forward(mf,df)
-nefc=int(df.nefc); J=np.array(df.efc_J).reshape(nefc,mf.nv)
-W=J@cp.Minv_apply(mf,df,J).T; R=np.array(df.efc_R[:nefc]); aref=np.array(df.efc_aref[:nefc])
-f=np.array(df.efc_force[:nefc]); qs=np.array(df.qacc_smooth)
-act=f>1e-9
-kkt=np.linalg.norm(((np.diag(R)-W)@f-(J@qs+aref))[act])/max(np.linalg.norm((J@qs+aref)[act]),1e-12)
-wt=abs(f.sum()-0.2*9.81)
-P2=kkt<1e-6 and wt<1e-4
+for _ in range(2000): mujoco.mj_step(mf,df)                 # SETTLED: a_c ~ 0
+kkt_settled, f_settled = p2_kkt_resid(mf, df)
+wt = abs(f_settled.sum()-0.2*9.81)
+# TRANSIENT: push the box into the plane so the contact is ACCELERATING (a_c != 0);
+# this is the state the old (R-W) sign silently FAILS while (W+R) stays machine-exact.
+df.qfrc_applied[:] = 0.0; df.qfrc_applied[2] = -30.0
+kkt_trans, _ = p2_kkt_resid(mf, df)
+df.qfrc_applied[:] = 0.0
+kkt = max(kkt_settled, kkt_trans)
+P2 = kkt<1e-6 and wt<1e-4
 
 # force non-locality (expected-low R²) on real friction data, for the record
 rows=[]
@@ -113,7 +133,8 @@ print("="*70)
 print("PRE-PANDA GATE  (Factorized Interaction World Model premises)")
 print("="*70)
 print(" P1 coupling identity   : residual median=%.1e max=%.1e   -> %s"%(np.median(res),res.max(),"PASS" if P1 else "FAIL"))
-print(" P2 local/global split  : frictionless KKT resid=%.1e  weight err=%.1e N -> %s"%(kkt,wt,"PASS" if P2 else "FAIL"))
+print(" P2 local/global split  : frictionless KKT (W+R)f=aref-a_u  settled=%.1e  transient=%.1e  weight err=%.1e N -> %s"
+      %(kkt_settled,kkt_trans,wt,"PASS" if P2 else "FAIL"))
 print("      (force IS non-local: Fn~[pen,vn] R²=%.2f on %d friction samples — EXPECTED,"%(r2,len(Rr)))
 print("       the coupling is exactly the analytical W-solve; local law inputs R,aref,μ ∈ z_local)")
 print(" P3 model-error budget  : contamination 2%%->%.1f%%  5%%->%.1f%%  10%%->%.1f%%  -> %s"
