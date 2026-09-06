@@ -50,12 +50,21 @@ Z_RELEASE_TOL = 0.018     # part must be lowered to within this of seated BEFORE
 TIP_FAIL = 45.0
 SETTLE_STEPS = 200
 
+# A POPULATION of source gripper configurations (train the shared model on these) + one
+# held-out TARGET configuration T (different finger length / mass / gains / force-cap / palm).
+# This is gripper-CONFIGURATION transfer, NOT yet articulated-arm cross-embodiment.
 BODIES = {
-    "S": dict(kp=300.0, kv=8.0, fcap=12.0, fbase=0.040, fhalf=0.006, flen=0.030,
-              fmass=0.030, palm=(0.05, 0.03, 0.02), frange=0.045),
-    "T": dict(kp=180.0, kv=6.0, fcap=7.0,  fbase=0.050, fhalf=0.008, flen=0.045,
-              fmass=0.060, palm=(0.06, 0.035, 0.025), frange=0.055),
+    "S1": dict(kp=320.0, kv=8.0, fcap=13.0, fbase=0.040, fhalf=0.006, flen=0.030,
+               fmass=0.030, palm=(0.05, 0.03, 0.02), frange=0.045),
+    "S2": dict(kp=260.0, kv=7.0, fcap=10.0, fbase=0.044, fhalf=0.006, flen=0.034,
+               fmass=0.040, palm=(0.052, 0.03, 0.022), frange=0.048),
+    "S3": dict(kp=380.0, kv=9.0, fcap=16.0, fbase=0.038, fhalf=0.005, flen=0.028,
+               fmass=0.026, palm=(0.048, 0.028, 0.02), frange=0.043),
+    "T":  dict(kp=180.0, kv=6.0, fcap=7.0,  fbase=0.050, fhalf=0.008, flen=0.045,
+               fmass=0.060, palm=(0.06, 0.035, 0.025), frange=0.055),
 }
+SOURCE_BODIES = ("S1", "S2", "S3")
+TARGET_BODY = "T"
 
 
 def _fixture_xml(pocket_hx, pocket_hy, wall_h, wall_t=0.006, mu=1.0):
@@ -107,14 +116,15 @@ def _object_xml(family, mu=1.0, inst=None):
     raise ValueError(family)
 
 
-def scene(family, body, mu=1.0, inst=None):
+def scene(family, body, mu=1.0, inst=None, ts=None):
     b = BODIES[body]
     obj_xml, fphalf, hz, comy, mass, phx, phy, wall_h = _object_xml(family, mu, inst)
     fix_xml, zf = _fixture_xml(phx, phy, wall_h, mu=mu)
     px, py, pz = b["palm"]
+    dt = DT if ts is None else ts
     xml = f"""
 <mujoco model="gp">
-  <option timestep="{DT}" integrator="implicitfast" cone="elliptic" jacobian="dense"/>
+  <option timestep="{dt}" integrator="implicitfast" cone="elliptic" jacobian="dense"/>
   <default><geom solref="0.01 1" solimp="0.9 0.95 0.001"/></default>
   <worldbody>
     <geom name="floor" type="plane" size="3 3 .1"/>
@@ -150,9 +160,12 @@ def scene(family, body, mu=1.0, inst=None):
     return xml, meta
 
 
-def run_episode(family, body, action, mu=1.0, inst=None, record=False):
+def run_episode(family, body, action, mu=1.0, inst=None, record=False, ts=None):
     gy = action["gy"]; yaw = action.get("yaw", 0.0); close = action["close"]; tspeed = action["tspeed"]
-    xml, meta = scene(family, body, mu, inst)
+    xml, meta = scene(family, body, mu, inst, ts=ts)
+    dt = DT if ts is None else ts
+    sc = max(1, int(round(DT / dt)))   # scale step COUNTS so physical durations are dt-invariant
+    def S(n): return int(n * sc)
     m = mujoco.MjModel.from_xml_string(xml); d = mujoco.MjData(m)
     A = {n: mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_ACTUATOR, n) for n in ("apx","apy","apz","apyaw","alf","arf")}
     obid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "object")
@@ -175,29 +188,29 @@ def run_episode(family, body, action, mu=1.0, inst=None, record=False):
                                        float(d.xpos[obid][2]), tilt()))
 
     # approach at grasp offset gy (palm_y = gy so the grasp point aligns to the object)
-    step(0.0, gy, hov, 0, 0, 60)
-    for k in range(80): a=(k+1)/80; step(0.0, gy, hov+a*(gz-hov), 0, 0, 1)
-    for k in range(80): a=(k+1)/80; step(0.0, gy, gz, a*close, a*close, 1)
-    step(0.0, gy, gz, close, close, 40)
-    for k in range(120): a=(k+1)/120; step(0.0, gy, gz+a*(lift_z-gz), close, close, 1)
+    step(0.0, gy, hov, 0, 0, S(60))
+    for k in range(S(80)): a=(k+1)/S(80); step(0.0, gy, hov+a*(gz-hov), 0, 0, 1)
+    for k in range(S(80)): a=(k+1)/S(80); step(0.0, gy, gz, a*close, a*close, 1)
+    step(0.0, gy, gz, close, close, S(40))
+    for k in range(S(120)): a=(k+1)/S(120); step(0.0, gy, gz+a*(lift_z-gz), close, close, 1)
     dz_lift = float(d.xpos[obid][2]) - oz0
     # transport: move palm x 0->X_FIX, HOLD py=gy so the OBJECT CENTER lands at pocket center
-    dist = X_FIX; nT = max(40, int(dist / max(tspeed,1e-3) / DT))
+    dist = X_FIX; nT = max(S(40), int(dist / max(tspeed,1e-3) / dt))
     for k in range(nT): a=(k+1)/nT; step(a*X_FIX, gy, lift_z, close, close, 1)
     # lower into pocket
     place_z = gz + (zf - PED_TOP)
-    for k in range(120): a=(k+1)/120; step(X_FIX, gy, lift_z+a*(place_z-lift_z), close, close, 1)
-    step(X_FIX, gy, place_z, close, close, 40)
+    for k in range(S(120)): a=(k+1)/S(120); step(X_FIX, gy, lift_z+a*(place_z-lift_z), close, close, 1)
+    step(X_FIX, gy, place_z, close, close, S(40))
     # object height at the moment of release: a controlled placement must have LOWERED the
     # part to near its seated height. A gripper jammed on the pocket rim that then DROPS the
     # part in is NOT a successful controlled place (mirrors "still held over the fixture != placed").
     z_at_release = float(d.xpos[obid][2])
     # RELEASE
-    for k in range(60): a=(k+1)/60; step(X_FIX, gy, place_z, close*(1-a), close*(1-a), 1)
+    for k in range(S(60)): a=(k+1)/S(60); step(X_FIX, gy, place_z, close*(1-a), close*(1-a), 1)
     # WITHDRAW
-    for k in range(120): a=(k+1)/120; step(X_FIX, gy, place_z+a*(hov-place_z), 0, 0, 1)
+    for k in range(S(120)): a=(k+1)/S(120); step(X_FIX, gy, place_z+a*(hov-place_z), 0, 0, 1)
     # SETTLE (object free)
-    step(X_FIX, gy, hov, 0, 0, SETTLE_STEPS)
+    step(X_FIX, gy, hov, 0, 0, S(SETTLE_STEPS))
 
     ox, oy, ozf = float(d.xpos[obid][0]), float(d.xpos[obid][1]), float(d.xpos[obid][2])
     final_tilt = tilt()
@@ -222,9 +235,9 @@ def run_episode(family, body, action, mu=1.0, inst=None, record=False):
 
 
 if __name__ == "__main__":
-    print("SMOKE TEST — nominal grasp per family, source body S")
+    print("SMOKE TEST — nominal grasp per family, source body S1")
     for fam in ("A", "B", "C"):
-        _, meta = scene(fam, "S")
+        _, meta = scene(fam, "S1")
         gy0 = meta["comy"]; yaw0 = (np.pi/2 if fam == "C" else 0.0)
         act = dict(gy=gy0, yaw=yaw0, close=meta["frange"], tspeed=0.4)
         r = run_episode(fam, "S", act)

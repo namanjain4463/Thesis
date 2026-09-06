@@ -1,0 +1,62 @@
+================================================================================================
+GRASP-AND-PLACE TRANSFER BENCHMARK — method comparison + adaptation-data curve
+================================================================================================
+source bodies (train)=['S1', 'S2', 'S3']  held-out target=T  candidates=16  test instances=48
+embodiment gap = gripper CONFIGURATION (finger length/mass/gains/force-cap/palm); articulated arm is the stated next step.
+
+OVERALL held-out task success (Wilson 95pct CI), n=48 test instances:
+  oracle (privileged)    1.00 [0.93,1.00]
+  CoM+checks (naive)     0.98 [0.89,1.00]
+  geometry-aware heur.   1.00 [0.93,1.00]
+                         budget:  b=0     b=10     b=30
+  calibrated-analytic    0.98 [0.89,1.00]  0.98 [0.89,1.00]  0.98 [0.89,1.00]
+  learned (frozen->adapt) 1.00 [0.93,1.00]  1.00 [0.93,1.00]  1.00 [0.93,1.00]
+
+Per-family success @budget=30:
+  family |  CoM  |  geo  | analytic | learned | oracle
+    A    | 1.00  | 1.00  |   1.00   |  1.00   |  1.00
+    B    | 1.00  | 1.00  |   1.00   |  1.00   |  1.00
+    C    | 0.94  | 1.00  |   0.94   |  1.00   |  1.00
+
+Paired (learned@30 - best-heuristic) on identical test instances: mean=+0.00  (wins=0 losses=0 ties=48)
+
+Failure-mode fractions @budget=30:
+  method                 PLACED  PLACE   TIP    DROP
+  CoM+checks (naive)     0.98    0.02   0.00   0.00
+  geometry-aware heur.   1.00    0.00   0.00   0.00
+  calibrated-analytic    0.98    0.02   0.00   0.00
+  learned-adapted        1.00    0.00   0.00   0.00
+  oracle                 1.00    0.00   0.00   0.00
+
+SOLVER-SENSITIVITY CHECK (re-run chosen decisions at dt/2, is the label stable?):
+  re-ran 92 unique chosen decisions at dt=0.0010: label FLIP fraction = 0.00 (0/92)
+  -> headline is ROBUST to the timestep.
+
+Execution time per placement (physical): ~0.86s transport + fixed phases (tspeed=0.35, constant across methods).
+
+SENSING-NOISE ROBUSTNESS (held-out success vs CoM-estimate std; learned retrained per level):
+  sigma_com(mm) |  geo  | analytic@30 | src-fixed-lookup | learned-frozen | learned-adapt@30 | oracle
+       8      | 0.98  |    0.94     |       1.00       |      0.98      |       1.00      |  1.00
+      20      | 0.81  |    0.83     |       1.00       |      1.00      |       1.00      |  1.00
+      35      | 0.67  |    0.62     |       1.00       |      1.00      |       1.00      |  1.00
+      55      | 0.69  |    0.62     |       1.00       |      1.00      |       1.00      |  1.00
+  @sigma=55mm paired (learned-adapt@30 - best-heuristic/analytic): mean=+0.31 (wins=15 losses=0 ties=33)
+wrote gp_out/gp_noise.png
+wrote gp_out/gp_bench.png
+
+[done in 68s]
+
+------------------------------------------------------------------------------------------------
+VERDICT (reads the numbers, not a preferred story):
+  At NOMINAL sensing: oracle=1.00  geo-heuristic=1.00  analytic@30=0.98  learned@30=1.00
+  * At good sensing a simple task-aware heuristic (1.00) already MATCHES the calibrated/learned
+    methods -> learning is NOT justified there (honest negative, consistent with the calibration result).
+  As sensing DEGRADES to sigma=55mm: geo=0.69  analytic@30=0.62  learned-frozen=1.00  learned-adapt@30=1.00  (oracle=1.00)
+  Deflation check: a trivial SOURCE fixed-grasp lookup (per-family, ignores the estimate) = 1.00 at sigma=55mm.
+  * PREDICTIVE RULE (honest, deflated): the scene's optimum is a FIXED per-family grasp recoverable
+    WITHOUT per-instance sensing. Methods that TRUST a noisy CoM estimate (geo, analytic) collapse as
+    sensing degrades; the learned model stays reliable — but so does a trivial fixed-grasp LOOKUP, so
+    the value is 'use population data, ignore the unreliable estimate', NOT a rich learned world model.
+  BOUNDARY: because a fixed per-family grasp suffices, this scene CANNOT decide the thesis for learning.
+  A decisive pro-learning experiment needs the optimal action to VARY with a hidden variable that
+  per-instance sensing cannot resolve but interaction data can (no fixed policy suffices).
