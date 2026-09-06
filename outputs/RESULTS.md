@@ -443,3 +443,53 @@ max abs err   = 1.02e-12
 ```
 
 ---
+
+## Tier-2 step (3)+(4): integrated grasp-and-place TRANSFER benchmark (2026-09)
+
+`gp_core.py` + `gp_groundtruth.py` + `gp_bench.py` — one complete grasp-and-place transfer
+experiment. Full task: approach → close(command) → lift → transport → lower → **release →
+withdraw → settle** → label, with a **controlled-place** criterion (the part must be lowered
+near-seated *before* release; a gripper jammed on the pocket rim that drops the part in is **not**
+a success). Three object families that each **discriminate** a grasp choice:
+
+- **A uniform** — only a central grasp seats (easy control).
+- **B off-center mass** — a central grasp tips/place-fails; a CoM-ward grasp holds.
+- **C placement-restricted** — needs center **and** yaw≈90° (fingers-along-x jam on a snug pocket wall).
+
+Held-out **target gripper configuration** (different finger length/mass/gains/force-cap/palm) — this
+is **gripper-configuration transfer, not yet articulated-arm cross-embodiment** (Panda is next). Five
+selectors choose from the **same** candidate set and use the **same** controller; every practical
+method sees the **same** observations (geometry + shared noisy CoM/μ estimates + known mass); the
+oracle is a privileged diagnostic.
+
+**Embedded checks (all pass):** disjoint train/calib/test instance pools · **0/92** solver-label
+flips at `dt/2` (headline is timestep-robust) · controlled-place labels · shared estimates (no
+hidden-info advantage) · per-episode decisions+seeds saved.
+
+**Result — conclusion follows the numbers (NOT a preferred story):**
+
+| condition | geo-heuristic | calibrated-analytic@30 | src fixed-grasp lookup | learned frozen→adapt@30 | oracle |
+|---|---|---|---|---|---|
+| nominal sensing (σ_CoM=8mm) | 1.00 | 0.98 | 1.00 | 1.00 | 1.00 |
+| σ_CoM=20mm | 0.81 | 0.83 | 1.00 | 1.00 | 1.00 |
+| σ_CoM=35mm | 0.67 | 0.62 | 1.00 | 1.00 | 1.00 |
+| σ_CoM=55mm | 0.69 | 0.62 | 1.00 | 1.00 | 1.00 |
+
+- **At good sensing a simple task-aware heuristic already solves it with ZERO target data**
+  (geo=1.00=oracle); calibrated-analytic and learned MATCH but add nothing → **learning is NOT
+  justified here** (consistent with the step-(2) command-calibration finding). The **adaptation-data
+  curve is flat at the ceiling** — no data-efficiency gap to demonstrate at good sensing.
+- **Sensing-noise axis** (CoM estimate re-drawn post-hoc — an *observation*, so no new rollouts):
+  methods that **trust** the noisy estimate collapse to ~0.62–0.69; methods that **ignore** it stay
+  1.00 (@55mm learned-adapt − heuristic = **+0.31**, 15 wins / 0 losses / 33 ties).
+- **Deflation:** a trivial **source fixed-grasp lookup** (per-family constant, ignores the estimate)
+  **also = 1.00 at every noise level**, matching the learned MLP. A universal-candidate check confirms
+  one candidate is feasible for all 16 target test instances per family (A→center, B→`gy=0.05`
+  far-CoM-ward, C→center+yaw90). **The scene's optimum is a FIXED per-family grasp → no rich learned
+  world model is justified**; the learned "robustness" is just that constant.
+- **Boundary / where it heads:** because a fixed per-family grasp suffices, **this scene cannot decide
+  the thesis for learning.** A decisive pro-learning experiment needs the optimal action to **vary with
+  a hidden variable per-instance sensing cannot resolve but a budget-charged interaction can**.
+
+Figures: `outputs/grasp_place_bench.png` (adaptation curve + per-family + failure modes),
+`outputs/grasp_place_noise.png` (success vs sensing noise). Full log: `outputs/grasp_place_transfer.txt`.

@@ -111,5 +111,23 @@ command-response model `2*clip(kp*(target-x_contact),0,F_limit)` (held-out R²=0
 naive "delivered=force cap" proxy (used in the overturned ranking benchmark) is badly wrong (held-out
 R²=-20, over-states ~2.5× except when the weak actuator saturates); a learned correction adds nothing
 (-0.2 pts) → analytical WINS for command→force (learning unjustified here — a valid reported outcome).
-`outputs/command_calibration.{png,txt}`. Steps (3),(4) TODO; `grasp_ranking_reversal.py` kept as a
-regression test (the corrected null), NOT a target to re-produce a reversal.
+`outputs/command_calibration.{png,txt}`. `grasp_ranking_reversal.py` kept as a regression test (the
+corrected null), NOT a target to re-produce a reversal.
+**Steps (3)+(4) DONE (2026-09) — integrated grasp-and-place TRANSFER benchmark.** `gp_core.py` +
+`gp_groundtruth.py` + `gp_bench.py`: one complete experiment. 3 families that DISCRIMINATE grasp
+choice (uniform / off-center-mass / placement-restricted-by-orientation), full task incl.
+release+withdraw+settle with a **controlled-place** criterion (a jammed drop-in is NOT a success),
+held-out TARGET gripper config, 5 selectors on an identical candidate set + controller, all practical
+methods sharing the SAME noisy CoM/μ estimates (oracle privileged). Checks pass: disjoint train/calib/
+test pools, **0/92** solver-label flips at `dt/2`, controlled-place labels. **Honest result (conclusion
+follows the numbers):** (a) at good sensing a task-aware **heuristic already solves it with 0 target
+data** (geo=1.00=oracle); calibrated-analytic 0.98 and learned 1.00 MATCH → **learning NOT justified**
+(consistent with step-2); adaptation-data curve **flat at ceiling**. (b) Sensing-noise axis (CoM
+estimate re-drawn post-hoc, no new rollouts): estimate-**trusting** methods (geo, analytic) collapse to
+~0.62–0.69 at `σ_CoM=55mm`; estimate-**ignoring** ones stay 1.00. (c) **DEFLATION:** a trivial SOURCE
+fixed-grasp lookup (per-family constant) **also =1.00 at all noise**, matching the learned MLP → the
+scene's optimum is a **FIXED per-family grasp**; **no rich world model justified**. (d) **BOUNDARY:**
+because a fixed policy suffices, this scene **cannot decide the thesis for learning** — a decisive
+pro-learning test needs the optimal action to VARY with a hidden variable per-instance sensing can't
+resolve but a budget-charged interaction can. Embodiment gap = gripper CONFIGURATION; **articulated arm
+(Panda) is the stated next step.** `outputs/grasp_place_{transfer.txt,bench.png,noise.png}`.

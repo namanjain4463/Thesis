@@ -283,15 +283,36 @@ less robot-specific data than calibrated/trained alternatives, at comparable rel
   (-0.2 pts)** -> for the command->force map the calibrated analytical model wins; learning is
   unjustified here (a valid, reported outcome per the §7 decision table). This replaces the bad
   capability estimate and gives step (3) the correct deliverable-force model.
-- **(3) complete grasp-and-place benchmark — TODO.** Three object families (uniform / off-center /
-  placement-restricted); fixed task (transport+place, pose/slip tolerances, support duration, failure
-  definitions, selector observations); task-set horizon (not a fixed 2 s); candidates + controller
-  identical across methods.
-- **(4) independent adaptation-data evaluation — TODO.** Shared model on source embodiments; hold out
-  target embodiment+controller; evaluate at 0/5/20/50 target-episode budgets vs CoM + calibrated-
-  wrench-feasibility + target-trained baselines + an oracle diagnostic; count ALL target-specific
-  effort; report success + uncertainty across independent episodes. Deliverable: an adaptation curve
-  (less new-robot work at equal reliability), or the honest negative.
+- **(3)+(4) integrated grasp-and-place transfer benchmark — DONE (2026-09).** `gp_core.py`
+  (validated scene: 3 families that DISCRIMINATE a grasp choice — uniform / off-center-mass /
+  placement-restricted-by-orientation; full task approach→close→lift→transport→lower→RELEASE→
+  WITHDRAW→SETTLE with a **controlled-place** criterion so a jammed drop-in is not a success),
+  `gp_groundtruth.py` (disjoint train/calib/test instance pools; per-instance HIDDEN friction +
+  CoM; the SHARED noisy CoM/μ estimates every practical method sees), `gp_bench.py` (5 selectors on
+  an identical candidate set + controller: naive-CoM, geometry-aware heuristic, calibrated-analytic,
+  learned frozen→adapted, privileged oracle; adaptation budgets 0/10/30; sensing-noise axis; a
+  trivial source fixed-grasp lookup as the deflation baseline). **Embedded checks all pass:** disjoint
+  sets, **0/92** solver-label flips at `dt/2`, controlled-place labels, shared observations, saved
+  per-episode decisions+seeds. **Result (conclusion follows the numbers):**
+  - At good sensing (`σ_CoM=8mm`) a **task-aware heuristic already solves it with 0 target data**
+    (geo=1.00=oracle); calibrated-analytic (0.98) and learned (1.00) MATCH but add nothing →
+    **learning NOT justified here**, consistent with step-(2). The **adaptation-data curve is flat at
+    the ceiling** — no data-efficiency gap to demonstrate at good sensing.
+  - **Sensing-noise axis** (CoM estimate re-drawn post-hoc, no new rollouts): methods that **TRUST**
+    the noisy estimate (geo, analytic) collapse to **~0.62–0.69** as `σ_CoM`→55mm; methods that
+    **IGNORE** it stay at **1.00** (@55mm learned-adapt − heuristic = **+0.31**, 15 wins/0 losses).
+  - **Deflation:** a trivial **source fixed-grasp lookup** (per-family constant, ignores the estimate)
+    **also = 1.00 at every noise level**, matching the learned MLP → the scene's optimum is a **FIXED
+    per-family grasp**; the learned "robustness" is just that constant, **no rich world model is
+    justified**. The universal-candidate check confirms one candidate is feasible for all 16 target
+    test instances per family (A→center, B→`gy=0.05` far-CoM-ward, C→center+yaw90).
+  - **BOUNDARY / where it's heading:** because a fixed per-family grasp suffices, **this scene cannot
+    decide the thesis for learning.** A decisive pro-learning experiment needs the optimal action to
+    **VARY with a hidden variable per-instance sensing cannot resolve but interaction data can** (no
+    fixed policy suffices) — e.g. per-instance friction/CoM that must be inferred from an allowed,
+    budget-charged preliminary interaction. Embodiment gap here = gripper **CONFIGURATION** (finger
+    length/mass/gains/force-cap/palm); the **articulated arm (Panda)** is the stated next target.
+  Outputs: `outputs/grasp_place_{transfer.txt, bench.png, noise.png}`.
 
 `grasp_ranking_reversal.py` is kept as a **regression test** (the corrected null); reproducing a
 reversal is not an objective.
