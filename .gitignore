@@ -8,3 +8,4 @@ mujoco/m2_out/
 mujoco/rankrev_out/
 mujoco/cal_out/
 gp_out/
+mujoco/gp_out_build*.log
