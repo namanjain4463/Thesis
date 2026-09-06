@@ -1,0 +1,23 @@
+==========================================================================================
+GRASP-RANKING REVERSAL micro-benchmark (Contribution C, force/moment-capability axis)
+==========================================================================================
+off-center bar: CoM_y=0.045 (geom center y=0)  mass=0.20 kg  weight=1.96 N
+candidate grasps y: [-0.02, 0.0, 0.02, 0.045, 0.06]
+
+ ground-truth HOLD map (MuJoCo):
+   gripperA (strong 25N)    y=-0.020:.  y=+0.000:H  y=+0.020:H  y=+0.045:H  y=+0.060:H
+   gripperB (weak 2.5N)     y=-0.020:.  y=+0.000:.  y=+0.020:H  y=+0.045:H  y=+0.060:H
+ deliverable grip (2x squeeze): {'gripperA (strong 25N)': 50.0, 'gripperB (weak 2.5N)': 5.0}
+ fitted finger lever = 0.010 m (ONE constant, pooled; geometric ref 0.020)  feasibility errors=1/10
+
+  body                     geometry-pick  PC-CGS-pick    ground-truth-best
+  gripperA (strong 25N)    y=0.0          y=0.0          y=0.0         
+  gripperB (weak 2.5N)     y=0.0          y=0.02         y=0.02        
+
+  geometry-only picks match ground-truth-best on 1/2 bodies; same grasp for all bodies (y in ['0.0']) -> NO reversal
+  PC-CGS picks match ground-truth-best on 2/2 bodies; picks DIFFER across bodies (y in ['0.0', '0.02']) -> REVERSAL
+  reason weak body rejects the geometric-center grasp (y=0): binding margin = moment (moment margin=-0.039 N·m<0)
+
+ VERDICT: CERTIFIED RANKING REVERSAL DEMONSTRATED — the capability-aware PC-CGS margin picks a DIFFERENT best grasp per embodiment (matching MuJoCo ground truth) and names the physical reason (moment margin), while a geometry-only ranker picks the same grasp for both and is wrong for the weaker body.
+
+ wrote rankrev_out/grasp_ranking_reversal.png

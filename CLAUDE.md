@@ -82,4 +82,15 @@ each reversal isolating one physical cause (reach / force-limit / balance / unob
 Closest prior work to beat: GraspGen-X (2606.00998, geometry-conditioned), Neary–Topcu (2212.00893,
 compositional bound — NOTE README had the wrong id 2412.11215, now fixed), Knuth (2010.08993,
 Lipschitz-gated planning). First build proposed: a MuJoCo ranking-reversal micro-benchmark reusing
-`graspability.py` + `cross_embodiment_v2` port split. NOT yet built — awaiting go-ahead.
+`graspability.py` + `cross_embodiment_v2` port split.
+**Tier-2 first slice BUILT (2026-09).** `grasp_ranking_reversal.py`: off-center-CoM bar, candidate
+grasps, two gripper embodiments (strong vs weak grip force = a real capability). MuJoCo-ground-truth
+best grasp REVERSES (strong→geometric center y=0; weak→toward CoM y=0.02, since y=0 tips out of its
+weaker grip). Capability-aware PC-CGS (one geometric finger-lever fit on pooled GT + each body's grip
+force) predicts BOTH argmaxes (2/2), reproduces the feasibility map 9/10, and NAMES the reason (moment
+margin); geometry-only ranker picks y=0 for both → wrong for the weak body. Fig+log:
+`outputs/rankrev_reversal.{png,txt}`. **v1 scope (honest):** force/moment axis only; two bodies share
+gripper morphology, differ in rated grip force (same port/reach); deliverable force = rated `2×squeeze`
+(not the measured port); lumped 1-param moment model (not the full `(W+R)` solve). **v2:** reach/
+manipulability with the real Panda (genuinely different port), camera-only refusal (observability),
+bimanual hand-participation.

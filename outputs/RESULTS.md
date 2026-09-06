@@ -264,6 +264,43 @@ port carries the embodiment", not grasp selection. Using `W_nn` needs the real `
 
 ---
 
+## Tier-2 first slice: certified grasp-ranking reversal
+
+First evidence for Contribution C (`mujoco/grasp_ranking_reversal.py`; proposal in
+`docs/tier2_grasp_selection.md`). Off-center-CoM bar; candidate grasps along it; two gripper
+embodiments differing in **rated grip force** (a real hardware capability). The MuJoCo-ground-truth
+best grasp **reverses**: the strong gripper holds the geometric-center grasp; the weak one tips out of
+it and must grasp toward the CoM. A capability-aware **PC-CGS** margin (one geometric finger-lever fit
+as a single constant on pooled ground truth + each body's grip force) predicts **both argmaxes
+(2/2)**, reproduces the feasibility map **9/10**, and **names the binding reason** (the *moment*
+margin). A **geometry-only** ranker picks the center for both and is **wrong for the weak body**.
+*Scope of v1:* isolates the force/moment axis (same gripper morphology, different grip force); reach/
+manipulability with the real Panda, camera-only refusal, and bimanual hand-participation are v2.
+
+![Certified grasp-ranking reversal (Tier-2 first slice)](rankrev_reversal.png)
+
+```text
+ ground-truth HOLD map (MuJoCo):
+   gripperA (strong 25N)    y=-0.020:.  y=+0.000:H  y=+0.020:H  y=+0.045:H  y=+0.060:H
+   gripperB (weak 2.5N)     y=-0.020:.  y=+0.000:.  y=+0.020:H  y=+0.045:H  y=+0.060:H
+ deliverable grip (2x squeeze): {strong: 50.0, weak: 5.0} N
+ fitted finger lever = 0.010 m (ONE constant, pooled; geometric ref 0.020)  feasibility errors=1/10
+
+  body                     geometry-pick  PC-CGS-pick    ground-truth-best
+  gripperA (strong 25N)    y=0.0          y=0.0          y=0.0
+  gripperB (weak 2.5N)     y=0.0          y=0.02         y=0.02
+
+  geometry-only matches GT-best 1/2 (same grasp for all bodies -> NO reversal)
+  PC-CGS matches GT-best 2/2 (picks DIFFER across bodies -> REVERSAL)
+  weak body rejects the geometric-center grasp (y=0): binding margin = MOMENT (-0.039 N·m<0)
+
+ VERDICT: CERTIFIED RANKING REVERSAL DEMONSTRATED — capability-aware PC-CGS picks a different best
+ grasp per embodiment (matching MuJoCo), names the physical reason (moment margin); geometry-only is
+ wrong for the weaker body.
+```
+
+---
+
 ## Second embodiment: Franka Panda grasp filmstrip
 
 Real Franka Panda (menagerie) grasps and lifts the same cylinder off the pedestal (obj_z 0.491 -> 0.600), emitting schema-identical z_local.

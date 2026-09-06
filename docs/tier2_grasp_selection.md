@@ -187,13 +187,23 @@ supplied physics* — the same three-way separation the 2nd reviewer demanded in
 - **No standardized benchmark** for capability-dependent ranking reversal across embodiments was found
   — we would define one (a contribution, but also a burden of proof: baselines must be strong).
 
-## 6. First concrete build (smallest decisive slice)
-A MuJoCo **grasp-ranking-reversal micro-benchmark**: one off-center-CoM object, a candidate set of
-grasps (height/side), two embodiments (floating gripper + Panda), and the PC‑CGS gate over the
-existing `graspability.py` margins + the `(W+R)` solve with the frozen compliance law. Show the
-argmax grasp **flips** between bodies and the **binding margin names the reason**, versus a
-geometry-only ranker that does not flip. This reuses `contact_probe`, `cross_embodiment_v2`'s port
-split, and `graspability.py` — days, not weeks — and is the honest first evidence for Contribution C.
+## 6. First concrete build — **DONE** (`mujoco/grasp_ranking_reversal.py`)
+A MuJoCo **grasp-ranking-reversal micro-benchmark** on the force/moment-capability axis. Off-center-CoM
+bar; candidate grasps along it; two embodiments = a strong vs a weak gripper (grip force is a real
+hardware capability). **Result:** the MuJoCo-ground-truth best grasp **reverses** — strong body →
+geometric-center grasp (y=0), weak body → a grasp toward the CoM (y=0.02) because y=0 tips out of its
+weaker grip. **PC‑CGS** (one geometric finger-lever fit as a single constant on the pooled ground
+truth + each body's rated grip force) predicts **both argmaxes correctly (2/2)**, reproduces the
+feasibility map **9/10**, and **names the binding reason** — the *moment* margin (−0.039 N·m for the
+weak body at y=0). A **geometry-only** ranker picks y=0 for both and is **wrong for the weak body**.
+Figure + log: `outputs/rankrev_reversal.{png,txt}`.
+
+**Honest scope of v1:** the two bodies share the gripper morphology and differ in *rated grip force*
+(same port/reach) — this isolates the force/moment axis cleanly; deliverable force is the rated spec
+(`2×squeeze`), not the measured Delassus port; the moment model is a single lumped lever, not the full
+`(W+R)` solve. **Next (v2):** the *reach/manipulability* axis with the real **Panda** (a genuinely
+different port), the *observability/refusal* axis (camera-only → reject force-critical), and the
+*bimanual* hand-participation decision — each a distinct physical cause of reversal.
 
 ## 7. References (confidence-flagged)
 Grasp synthesis: GraspGen-X ≈2606.00998 · D(R,O) ✓2410.01702 · T(R,O) ≈2510.12724 · MachaGrasp
