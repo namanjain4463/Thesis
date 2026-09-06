@@ -316,3 +316,93 @@ less robot-specific data than calibrated/trained alternatives, at comparable rel
 
 `grasp_ranking_reversal.py` is kept as a **regression test** (the corrected null); reproducing a
 reversal is not an objective.
+
+## §9 — External review (Codex, 2026-09) adopted; corrections + the precise next experiment
+
+A second external reviewer inspected the benchmark at commit `25e7a0d`, independently reproduced
+three target placements, and checked the force math. Its critique is largely correct; I verified
+each point against the code before accepting it. Corrections adopted:
+
+**A. Five implementation errors fixed (null result preserved — better evidence, same conclusion).**
+1. `_mech_feats()` used the *first source gripper's* finger spacing (`fbase`) for every body → the
+   target's analytical force estimate was wrong. Now uses the **queried body's** `fbase`.
+2. The analytic feasibility tested a **moment margin only**; a grasp exactly at the CoM (`dcom→0`)
+   passed on moment while friction could be too weak to hold the object vertically. Now requires
+   **both** vertical force balance (`2·µ·Fn ≥ m·g`) **and** moment balance.
+3. `oz0` (initial object height) was read **before** `mj_forward` → lift displacement started from 0
+   (`dz_lift≈400mm`). Fixed → `dz_lift≈150mm`; label logic was unaffected (cosmetic log field).
+4. The "disjointness check" only checked that three split *names* exist. Now compares actual
+   per-instance `(family, µ, CoM, mass)` signatures across splits: **48/48/48 unique, 0 shared**.
+5. `DROP` was decided from the **final** height only. Now a lost/fallen object is tracked
+   **throughout** the post-grasp trajectory (min-height gate), matching the "no drop at any point" claim.
+
+After all five fixes the benchmark's conclusion is **unchanged**: at good sensing a fixed per-family
+grasp still solves the scene (geo=1.00=oracle; learned=1.00; analytic=0.98). Fixing the bugs improves
+the evidence; it does not create a learning advantage where a lookup already succeeds. `gp_bench.py` is
+now kept as a **regression suite**, not tuned for headlines.
+
+**B. Retraction.** My earlier "boundary" claim — that a decisive learning experiment *requires* a
+hidden variable resolved only by a preliminary interaction — is **withdrawn**. Learning can also be
+useful when the relevant information is *visible* but the map from (geometry, grasp, trajectory, robot
+capability) to outcome is hard to model or transfer efficiently. Hidden variables are one possible
+difficulty, not a prerequisite; and hidden-parameter identification is already well covered (ASID;
+Poke-and-Strike; cross-embodiment world models). **Do not build a hidden-variable scene whose only
+purpose is to make the existing classifier win.**
+
+**C. The real mismatch to fix.** The current learned method is a binary-outcome classifier over scalar
+features + family indicators on a *floating Cartesian gripper*. It does **not** implement the thesis's
+factorization (a shared local contact law `C_θ(z_local)` composed with each body's analytical port
+`Y_G` through the `(W+R)` solve), does not predict evolving contact/object motion, and does not use an
+articulated arm. So the benchmark evaluates **family-conditioned grasp selection under gripper-parameter
+changes**, not the proposed interaction world model.
+
+**D. Precise contribution to defend (unchanged objective, sharpened).** *A compact interaction model
+that predicts grasp-and-place consequences across articulated robots by separating shared contact
+behavior from each robot's actual controller response and physical limits.* Question: does that
+separation give **better transfer, lower calibration cost, or faster useful prediction** than
+alternatives? Evaluate through **predicted consequences** (object motion, slip, seating error), not a
+family success label. Contact forces may be privileged training labels in sim; they must **not** become
+deployment observations. For position-controlled hardware, closure+motion commands are the actions;
+predicted forces come from the modeled interaction, not executable force commands.
+
+**E. When information changes a decision (analysis lens, not newly-invented math).** With `E` the
+robot/controller, `θ` uncertain object/contact properties, `a` a grasp+execution, `𝒜_E(θ)` the actions
+that succeed under the modeled constraints, and `Θ(h)` the hypotheses consistent with history `h`, the
+uncertainty-robust actions are `𝒜_E^robust(h) = ⋂_{θ∈Θ(h)} 𝒜_E(θ)`. Three regimes: (i) the
+intersection is non-empty → execute; identification adds no value (**our lookup result is this regime
+over the sampled instances**); (ii) empty, but individual hypotheses admit actions → info may help *iff*
+an available interaction distinguishes the hypotheses; (iii) infeasible even with known properties →
+inference cannot create missing torque/reach/access/balance. The regime depends on the **robot** (a
+0.5 vs 0.2 N·m holding-capacity arm faces the same CoM uncertainty differently). The algorithmic
+contribution must show how to **approximate these decisions efficiently and transfer them reliably**.
+
+**F. The decisive next experiment (spec).**
+1. **Articulated robots now.** Matched object/task instances across articulated configurations;
+   separate arm/controller changes from gripper changes (else confounded).
+2. **Vary geometry + task constraints within categories.** Accessible contact regions, fixture
+   orientation, insertion access, dimensions, posture. **Generate candidates from geometry**, not
+   fixed family coordinates. Reserve unseen combinations before looking at outcomes.
+3. **Implement the shared contact model inside the coupled predictor.** Compare vs a calibrated
+   analytical model **and** a similarly-sized learned predictor *without* the separation — the direct
+   test of whether the architecture contributes.
+4. **Include the strongest cheap alternatives:** keep the source fixed-grasp lookup; add a
+   geometry-conditioned **retrieval** baseline.
+5. **Measure transfer AND execution:** sustained success, failure modes, target calibration cost,
+   prediction/planning latency (target: the Orin; the cited cross-embodiment world-model reports
+   ~60 s/planning update on an RTX 4090 — a practical limitation to beat, not yet beaten). Hold out
+   robot configs **and** object/task combinations *separately* so a failure has an interpretable cause.
+6. **Freeze development choices before the final evaluation;** the current instances are development
+   evidence (repeatedly inspected). New final-test instances stay untouched.
+
+**Decisive ablation:** *does the shared contact model + robot-specific dynamics outperform an equally
+informed, equally trained model without that separation on a held-out articulated robot?* — with the
+data-efficiency and latency variants as secondary supports.
+
+**G. Substrate check done (`panda_variants.py`).** Panda grasp+lift works across arm-parameter variants
+(5/5), **but** the endpoint Delassus port trace varies only **~4%** across variants for a *light* object
+under a stiff position servo (object+finger dominate); a heavier 0.4 kg object moves the port ~12% but
+exceeds the grasp's holding capacity. **Design constraint for the build:** the experiment needs a regime
+where the arm's port genuinely shapes a *feasible* outcome — dynamic transport (accelerations), binding
+torque limits, and/or varied arm **kinematics** (link lengths change `J`), with object masses in the
+feasible band. Static lift of a light object is insufficient. Bimanual/humanoid extensions come *after*
+the single-arm ablation is established, not by adding more independent gripper blocks.

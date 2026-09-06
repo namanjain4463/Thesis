@@ -127,7 +127,25 @@ estimate re-drawn post-hoc, no new rollouts): estimate-**trusting** methods (geo
 ~0.62–0.69 at `σ_CoM=55mm`; estimate-**ignoring** ones stay 1.00. (c) **DEFLATION:** a trivial SOURCE
 fixed-grasp lookup (per-family constant) **also =1.00 at all noise**, matching the learned MLP → the
 scene's optimum is a **FIXED per-family grasp**; **no rich world model justified**. (d) **BOUNDARY:**
-because a fixed policy suffices, this scene **cannot decide the thesis for learning** — a decisive
-pro-learning test needs the optimal action to VARY with a hidden variable per-instance sensing can't
-resolve but a budget-charged interaction can. Embodiment gap = gripper CONFIGURATION; **articulated arm
-(Panda) is the stated next step.** `outputs/grasp_place_{transfer.txt,bench.png,noise.png}`.
+because a fixed policy suffices, this scene **cannot decide the thesis for learning**. Embodiment gap =
+gripper CONFIGURATION; articulated arm is the next step. `outputs/grasp_place_{transfer.txt,bench.png,noise.png}`.
+**External review #2 (Codex, 2026-09) — corrections adopted (docs/tier2 §9).** Verified each point
+against the code first. (a) Fixed 5 real bugs — analytic used the wrong body's finger spacing; analytic
+tested MOMENT-only (a grasp at the CoM passed while vertical friction couldn't hold — now requires FORCE
+*and* moment balance); `oz0` read before `mj_forward` (dz_lift 400→150mm); disjointness check only
+checked split *names* (now compares (family,μ,CoM,mass) signatures: 48/48/48 unique, 0 shared); DROP was
+final-height-only (now tracked throughout). **Null PRESERVED** (geo=1.00, learned=1.00, analytic=0.98).
+`gp_bench.py` kept as a regression suite. (b) **RETRACTED** my "a decisive learning test REQUIRES a
+hidden variable + preliminary interaction" claim — learning can help when info is visible but the map is
+hard to model/transfer; hidden-param ID is already covered (ASID, Poke-and-Strike, cross-embodiment WMs).
+(c) Real mismatch: the learned method is a binary-outcome CLASSIFIER on a floating gripper — it does NOT
+implement the thesis factorization (`C_θ(z_local)` ∘ port `Y_G` through the `(W+R)` solve), predict
+object motion, or use an articulated arm. (d) **Precise contribution to defend:** a compact interaction
+model that predicts grasp-and-place CONSEQUENCES across ARTICULATED robots by separating shared contact
+behavior from each robot's controller response + limits; decisive ablation = factorized vs an
+equally-sized UNSTRUCTURED predictor on a held-out articulated robot (+ data-efficiency, + latency vs the
+~60s/plan cross-embodiment WM baseline). (e) **Substrate check (`panda_variants.py`):** Panda grasp+lift
+works across arm variants (5/5) but the endpoint port trace varies only ~4% for a light object under a
+stiff servo (object+finger dominate); heavier object moves it ~12% but exceeds grasp capacity → the
+factorization experiment needs dynamic transport / binding torque limits / varied arm KINEMATICS with
+masses in the feasible band. **Do NOT build a hidden-variable scene just to make the classifier win.**
