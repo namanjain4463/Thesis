@@ -128,8 +128,10 @@ def _finger_geoms(m):
     return fg
 
 
-def run_grasp(params, save_render=False, on_step=None, verbose=False, hoff=0.0):
+def run_grasp(params, save_render=False, on_step=None, verbose=False, hoff=0.0, model_edit=None):
     m = make_model(params)
+    if model_edit is not None:            # create arm-parameter VARIANTS (payload/damping/gains)
+        model_edit(m)
     d = mujoco.MjData(m)
     set_home(m, d)
     hb = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "hand")
