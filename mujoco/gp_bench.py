@@ -142,22 +142,28 @@ def m_geo(instrecs, body, thresh=0.016):
     return int(min(cixs, key=lambda i: (abs(instrecs[i]["gy"] - gy_target), instrecs[i]["yaw"])))
 
 def _mech_feats(rec, body):
-    """Mechanistic features for the analytical model (observable + estimates + known mass)."""
-    fam = rec["family"]; g = FG[fam]; b = BODIES[body]
-    x_contact = g["fbase"] - g["fphalf"] - b["fhalf"]
+    """Mechanistic quantities for the analytical model (observable + estimates + known mass).
+    Uses the QUERIED body's finger spacing (fbase) — not a fixed source body's."""
+    b = BODIES[body]
+    x_contact = b["fbase"] - FG[rec["family"]]["fphalf"] - b["fhalf"]        # this body's finger geometry
     close_absv = rec["close_frac"] * b["frange"]
-    Fn = 2.0 * max(0.0, min(b["kp"] * (close_absv - x_contact), b["fcap"]))   # step-2 command model
-    dcom = abs(rec["gy"] - rec["comy_est"])
-    hold = rec["mu_est"] * Fn                             # grip capacity proxy
-    load = rec["mass_true"] * G * dcom                    # weight moment (known mass)
-    return np.array([hold, load, dcom, Fn], float)
+    Fn = 2.0 * max(0.0, min(b["kp"] * (close_absv - x_contact), b["fcap"]))  # total normal force (both fingers)
+    grip = rec["mu_est"] * Fn                             # total friction capacity
+    weight = rec["mass_true"] * G                         # object weight (known mass)
+    dcom = abs(rec["gy"] - rec["comy_est"])              # grasp offset from estimated CoM
+    return np.array([grip, weight, dcom, Fn], float)
+
+def _analytic_feasible(grip, weight, dcom, scale, lever):
+    """Feasible only if BOTH hold conditions pass: vertical FORCE balance (friction supports the
+    weight) AND MOMENT balance (friction torque supports the weight's moment about the grasp).
+    The moment term alone can be satisfied by grasping at the CoM (dcom→0) while friction is still
+    too weak to hold the object vertically — so both are required."""
+    return (scale*grip - weight) > 0 and (scale*grip*lever - weight*dcom) > 0
 
 def m_analytic(instrecs, body, calib_pairs, lever0=0.02, scale0=1.0):
-    """Mechanistic feasibility: predicted-feasible if grip capacity beats the weight moment
-    (margin = scale*mu_est*Fn*lever - mass*g*dcom > 0); among feasible full-close grasps, take
+    """Mechanistic feasibility (force AND moment balance); among feasible full-close grasps take
     the one nearest the estimated CoM. CALIBRATION tunes the PHYSICAL constants (lever, force
-    scale) on target episodes — it stays a mechanistic model, so more data refines it, never
-    swaps in a generic classifier."""
+    scale) on target episodes — it stays a mechanistic model, so more data refines it."""
     fam = instrecs[0]["family"]
     ok = [i for i, r in enumerate(instrecs) if collision_ok(fam, r["yaw"], body)]
     if not ok: ok = list(range(len(instrecs)))
@@ -168,14 +174,15 @@ def m_analytic(instrecs, body, calib_pairs, lever0=0.02, scale0=1.0):
             for sc in np.linspace(0.5, 1.6, 8):
                 agree = 0
                 for r, pl in calib_pairs:
-                    hold, load, dcom, Fn = _mech_feats(r, body)
-                    pred = 1 if (sc*hold*lv - load) > 0 and collision_ok(r["family"], r["yaw"], body) else 0
+                    grip, weight, dcom, Fn = _mech_feats(r, body)
+                    pred = 1 if _analytic_feasible(grip, weight, dcom, sc, lv) and collision_ok(r["family"], r["yaw"], body) else 0
                     agree += (pred == pl)
                 if agree > best[2]: best = (lv, sc, agree)
         lever, scale = best[0], best[1]
-    def margin(i):
-        hold, load, dcom, Fn = _mech_feats(instrecs[i], body); return scale*hold*lever - load
-    feas = [i for i in ok if margin(i) > 0 and instrecs[i]["close_frac"] == 1.0]
+    def ok_pred(i):
+        grip, weight, dcom, Fn = _mech_feats(instrecs[i], body)
+        return _analytic_feasible(grip, weight, dcom, scale, lever)
+    feas = [i for i in ok if ok_pred(i) and instrecs[i]["close_frac"] == 1.0]
     pool = feas if feas else ok
     return int(min(pool, key=lambda i: abs(instrecs[i]["gy"] - instrecs[i]["comy_est"])))
 
@@ -233,9 +240,20 @@ def main():
     testkeys = sorted([k for k in T if k[1] == "test"])              # (fam,test,T,inst)
     calibkeys = sorted([k for k in T if k[1] == "calib"])
 
-    # disjointness check (train/calib/test are separate instance pools)
-    assert len({k[1] for k in T}) == 3
+    # disjointness check — compare the actual physical INSTANCE parameters across splits, not just
+    # that three split names exist. A duplicated (mu, CoM, mass) tuple across splits would leak.
+    def sigset(setname):
+        s = set()
+        for r in records:
+            if r["setname"] == setname:
+                s.add((r["family"], round(r["mu_true"], 6), round(r["comy_true"], 6), round(r["mass_true"], 6)))
+        return s
+    strain, scal, stest = sigset("train"), sigset("calib"), sigset("test")
+    leak = (strain & scal) | (strain & stest) | (scal & stest)
+    assert not leak, f"INSTANCE LEAK across splits: {len(leak)} shared (family,mu,CoM,mass) tuples"
     print("=" * 96)
+    print("disjointness OK: train=%d calib=%d test=%d unique instance-signatures, 0 shared across splits"
+          % (len(strain), len(scal), len(stest)))
     print("GRASP-AND-PLACE TRANSFER BENCHMARK — method comparison + adaptation-data curve")
     print("=" * 96)
     print(f"source bodies (train)={list(SOURCE_BODIES)}  held-out target={TARGET_BODY}  "

@@ -170,10 +170,12 @@ def run_episode(family, body, action, mu=1.0, inst=None, record=False, ts=None):
     A = {n: mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_ACTUATOR, n) for n in ("apx","apy","apz","apyaw","alf","arf")}
     obid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "object")
     hz = meta["hz"]; zf = meta["zf"]
+    mujoco.mj_forward(m, d)              # derive positions BEFORE reading the initial object height
     oz0 = float(d.xpos[obid][2])
     gz = PED_TOP + 2*hz + 0.035
     hov = gz + 0.15; lift_z = gz + 0.22
-    tip_flag = [False]; frames = []
+    drop_z = PED_TOP + 0.4*hz            # object center below this => lost / fell
+    tip_flag = [False]; lost_flag = [False]; grasped = [False]; frames = []
 
     def C(px, py, pz, lf, rf):
         d.ctrl[A["apx"]]=px; d.ctrl[A["apy"]]=py; d.ctrl[A["apz"]]=pz-PALM_HOME
@@ -184,6 +186,9 @@ def run_episode(family, body, action, mu=1.0, inst=None, record=False, ts=None):
         for _ in range(n):
             C(px, py, pz, lf, rf); mujoco.mj_step(m,d)
             if tilt() > TIP_FAIL: tip_flag[0]=True
+            # DROP tracked THROUGHOUT the post-grasp trajectory (not only at the final frame):
+            # once lifted, if the object center ever falls below the pocket-floor band it is lost.
+            if grasped[0] and float(d.xpos[obid][2]) < drop_z: lost_flag[0]=True
             if record: frames.append((float(d.xpos[obid][0]), float(d.xpos[obid][1]),
                                        float(d.xpos[obid][2]), tilt()))
 
@@ -193,6 +198,7 @@ def run_episode(family, body, action, mu=1.0, inst=None, record=False, ts=None):
     for k in range(S(80)): a=(k+1)/S(80); step(0.0, gy, gz, a*close, a*close, 1)
     step(0.0, gy, gz, close, close, S(40))
     for k in range(S(120)): a=(k+1)/S(120); step(0.0, gy, gz+a*(lift_z-gz), close, close, 1)
+    grasped[0] = True                    # from here on, a fall below drop_z counts as a DROP
     dz_lift = float(d.xpos[obid][2]) - oz0
     # transport: move palm x 0->X_FIX, HOLD py=gy so the OBJECT CENTER lands at pocket center
     dist = X_FIX; nT = max(S(40), int(dist / max(tspeed,1e-3) / dt))
@@ -218,7 +224,7 @@ def run_episode(family, body, action, mu=1.0, inst=None, record=False, ts=None):
     z_rest = zf + hz
     z_err = abs(ozf - z_rest)
     rel_z_err = abs(z_at_release - z_rest)     # how far above seated the part was at release
-    dropped = (ozf < PED_TOP + 0.4*hz)
+    dropped = lost_flag[0] or (ozf < PED_TOP + 0.4*hz)   # lost at ANY point post-grasp, or fallen at the end
     if dropped:
         label = "DROP"
     elif tip_flag[0]:
@@ -240,7 +246,7 @@ if __name__ == "__main__":
         _, meta = scene(fam, "S1")
         gy0 = meta["comy"]; yaw0 = (np.pi/2 if fam == "C" else 0.0)
         act = dict(gy=gy0, yaw=yaw0, close=meta["frange"], tspeed=0.4)
-        r = run_episode(fam, "S", act)
+        r = run_episode(fam, "S1", act)
         print(f"  family {fam}: {r['label']:6s}  pos_err={r['pos_err']*1000:5.1f}mm "
               f"tilt={r['final_tilt']:5.1f}deg z_err={r['z_err']*1000:5.1f}mm dz_lift={r['dz_lift']*1000:5.1f}mm "
               f"(gy={gy0*1000:.0f}mm yaw={np.degrees(yaw0):.0f}deg)")

@@ -1,4 +1,5 @@
 ================================================================================================
+disjointness OK: train=48 calib=48 test=48 unique instance-signatures, 0 shared across splits
 GRASP-AND-PLACE TRANSFER BENCHMARK — method comparison + adaptation-data curve
 ================================================================================================
 source bodies (train)=['S1', 'S2', 'S3']  held-out target=T  candidates=16  test instances=48
@@ -44,7 +45,7 @@ SENSING-NOISE ROBUSTNESS (held-out success vs CoM-estimate std; learned retraine
 wrote gp_out/gp_noise.png
 wrote gp_out/gp_bench.png
 
-[done in 68s]
+[done in 54s]
 
 ------------------------------------------------------------------------------------------------
 VERDICT (reads the numbers, not a preferred story):
