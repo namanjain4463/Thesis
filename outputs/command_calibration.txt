@@ -1,0 +1,19 @@
+========================================================================================
+COMMAND->CONTACT CALIBRATION (Tier-2 step 2): is delivered force predictable?
+========================================================================================
+  swept 192 command/config combos (centered cylinder)
+
+  predictor                         held-out R²    held-out median rel-err
+   naive: delivered = force cap     -20.029          15.8%
+   analytic command-response (kp,geom)   0.998           0.9%
+   analytic + learned correction      0.999           0.7%
+
+  actuator SATURATES (delivered≈cap) in 40% of combos (weak grips); in the rest the cap OVER-states
+  delivered force by 2.5x on average -> the force cap is NOT delivered force.
+  contact-formation time is set by closing speed+geometry (ramp reaches x_contact): range 0.050-0.220 s
+
+ VERDICT: delivered contact force is PREDICTABLE from command+config by a parameter-free analytical
+  command-response model (R²≈1.00, rel-err≈1% held-out); the naive force-cap proxy is badly wrong
+  (a learned correction changes held-out rel-err by -0.2 pts -> NO material gain from learning this map).
+
+ wrote cal_out/command_calibration.png

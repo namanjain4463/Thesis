@@ -102,3 +102,14 @@ without a tested error bound. **Next milestone (reviewer):** a frozen, INDEPENDE
 selector predicting SUSTAINED outcomes on held-out cases that BEATS the CoM + wrench-feasibility
 baselines; prioritize force-realization, sustained outcomes, independent eval over more NN/humanoid
 scope. Reviewer priority tests 1-8 in the doc.
+**Tier-2 package (3rd-review), frozen RQ:** can a shared interaction model select grasp location +
+closing behavior on a new robot with LESS robot-specific data than calibrated/trained alternatives, at
+comparable reliability? Three additions in order: (2) command→contact calibration, (3) grasp-and-place
+benchmark, (4) adaptation-data eval. **Step (2) DONE (2026-09):** `command_calibration.py` swept 192
+command/config combos; delivered contact force is predictable by a PARAMETER-FREE analytical
+command-response model `2*clip(kp*(target-x_contact),0,F_limit)` (held-out R²=0.998, rel-err 0.9%); the
+naive "delivered=force cap" proxy (used in the overturned ranking benchmark) is badly wrong (held-out
+R²=-20, over-states ~2.5× except when the weak actuator saturates); a learned correction adds nothing
+(-0.2 pts) → analytical WINS for command→force (learning unjustified here — a valid reported outcome).
+`outputs/command_calibration.{png,txt}`. Steps (3),(4) TODO; `grasp_ranking_reversal.py` kept as a
+regression test (the corrected null), NOT a target to re-produce a reversal.

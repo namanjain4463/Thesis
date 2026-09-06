@@ -306,6 +306,37 @@ its map agreement is not zero-shot.)
 
 ---
 
+## Tier-2 step (2): command→contact calibration
+
+`mujoco/command_calibration.py`. The 3rd review's most consequential point: the ranker assumed
+deliverable grip = 2× the actuator force **limit** (e.g. 50 N), but a position-servo finger does not
+reach its limit in general. Swept 192 command/config combos (closing target, closing speed, force
+limit, object width, interface compliance), recording synchronized command, finger pos/vel, actuator
+force, contact force, object motion, contact-formation time.
+
+**Finding: delivered contact force is predictable — the force cap is not delivered force, and this map
+needs no learning.** A parameter-free analytical command-response model `2·clip(kp·(target−x_contact),
+0, F_limit)` predicts held-out delivered force at **R²=0.998, median rel-err 0.9%**; the naive
+force-cap proxy gets held-out **R²=−20** (it over-states delivered force ~2.5× on the 60% of combos
+where the actuator does not saturate; it is exact only for the 40% weak-grip combos that saturate). A
+learned correction adds nothing (−0.2 pts) → for the command→force map the calibrated analytical model
+wins (a valid outcome per the review's decision table). This replaces the bad capability estimate and
+feeds the grasp-and-place benchmark (step 3) the correct deliverable-force model.
+
+![Command→contact calibration](command_calibration.png)
+
+```text
+  predictor                         held-out R²    held-out median rel-err
+   naive: delivered = force cap     -20.029          15.8%
+   analytic command-response (kp,geom)   0.998           0.9%
+   analytic + learned correction      0.999           0.7%
+  actuator SATURATES (delivered≈cap) in 40% of combos (weak grips); else the cap over-states by ~2.5×.
+  VERDICT: delivered force is analytically predictable; the force cap is a bad proxy; learning this
+  map adds nothing (analytical wins for command→force).
+```
+
+---
+
 ## Second embodiment: Franka Panda grasp filmstrip
 
 Real Franka Panda (menagerie) grasps and lifts the same cylinder off the pedestal (obj_z 0.491 -> 0.600), emitting schema-identical z_local.

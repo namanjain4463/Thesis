@@ -5,6 +5,20 @@
 > closest prior work and grounded in what Tiers 0–1 already validated. It follows the 2nd reviewer's
 > redirection: *move from contact-force regression to grasp decisions.*
 
+## 0a. Frozen research question (3rd review) & the three-part package
+
+> **RQ (frozen):** *Can a shared interaction model select grasp location and closing behavior on a new
+> robot with **less robot-specific data** than separately calibrated or trained alternatives, **at
+> comparable reliability**?*
+
+Not assumed correct: the current factorization, any world-model architecture, or the "certificate."
+Capability-aware grasp planning already exists (Chen IROS'18 `1710.11190`; King RSS'13); cross-embodiment
+world models exist (`2511.01177`). The contribution must be a **measured** improvement over these, and
+the conclusion **follows the results — including the calibrated analytical baseline winning.** Not
+required: a ranking reversal (preserving a ranking is equally valid). The package is exactly three
+additions, in order: **(2) command→contact calibration, (3) a complete grasp-and-place benchmark,
+(4) an independent adaptation-data evaluation.** Progress is tracked in §8.
+
 ## 0. Provenance & verification honesty
 
 Researched via four parallel literature-review subagents (2026‑09). **arxiv.org and publisher PDF
@@ -251,3 +265,33 @@ Contact/certified: ContactNets ✓2009.11193 · Simultaneous-learning ✓2310.12
 ✓2103.15406 · SAP ✓2110.10107 · Nimble ✓2103.16021 · GNS ✓2002.09405 · TossingBot ✓1903.11239.
 World models: HPT ✓2409.20537 · RoboCraft ✓2205.02909 · cross-embodiment WM (reviewer) 2511.01177 ·
 XIRL/CrossFormer ⚠. From-memory (fetch before citing): HNN ⚠1906.01563 · DeLaN ⚠1907.04490 · Kloss ⚠1710.04102.
+
+## 8. Package progress (3rd-review milestone)
+
+RQ (§0a): *can a shared interaction model select grasp location + closing behavior on a new robot with
+less robot-specific data than calibrated/trained alternatives, at comparable reliability?*
+
+- **(2) command→contact calibration — DONE** (`mujoco/command_calibration.py`,
+  `outputs/command_calibration.{png,txt}`). Swept 192 command/config combos (closing target, closing
+  speed, actuator force limit, object width, interface compliance) recording synchronized command,
+  finger pos/vel, actuator force, contact force, object motion, contact-formation time. **Delivered
+  contact force is predictable from command+config by a parameter-free analytical command-response
+  model `2*clip(kp*(target - x_contact), 0, F_limit)` — held-out R2=0.998, median rel-err 0.9%.** The
+  naive "delivered = force cap" proxy (used in the overturned ranking benchmark) is badly wrong:
+  held-out R2=-20, over-stating delivered force by ~2.5x on the 60% of combos where the actuator does
+  NOT saturate (it saturates, delivered~cap, only for weak grips). **A learned correction adds nothing
+  (-0.2 pts)** -> for the command->force map the calibrated analytical model wins; learning is
+  unjustified here (a valid, reported outcome per the §7 decision table). This replaces the bad
+  capability estimate and gives step (3) the correct deliverable-force model.
+- **(3) complete grasp-and-place benchmark — TODO.** Three object families (uniform / off-center /
+  placement-restricted); fixed task (transport+place, pose/slip tolerances, support duration, failure
+  definitions, selector observations); task-set horizon (not a fixed 2 s); candidates + controller
+  identical across methods.
+- **(4) independent adaptation-data evaluation — TODO.** Shared model on source embodiments; hold out
+  target embodiment+controller; evaluate at 0/5/20/50 target-episode budgets vs CoM + calibrated-
+  wrench-feasibility + target-trained baselines + an oracle diagnostic; count ALL target-specific
+  effort; report success + uncertainty across independent episodes. Deliverable: an adaptation curve
+  (less new-robot work at equal reliability), or the honest negative.
+
+`grasp_ranking_reversal.py` is kept as a **regression test** (the corrected null); reproducing a
+reversal is not an objective.

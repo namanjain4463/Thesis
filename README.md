@@ -384,6 +384,7 @@ inside the real solve; testing that is the next step.
 | 11 | `port_identification.py` | free-space `ε_Y` + two-source certificate | Panda naive port 94% wrong (real); ID is **instantaneous open-loop** (closed-loop `Y_G` open) |
 | 12 | `deleak_dataset.py` + `deleak_train_eval.py` | de-leaked C_θ cross-embodiment transfer (no raw `μ/solref/solimp`), **audit-corrected** | held-out Panda `F_n`: white-box **compliance transfers R²=0.72** (> retrain MLP 0.40); the port `W_nn` as a feature **hurts** (non-overlapping); absolute `F_n` confounded by grip (~6×) |
 | 13 | `grasp_ranking_reversal.py` | **Tier‑2 first slice, audit-corrected** — sustained-hold grasp eval (Contribution C; proposal in `docs/tier2_grasp_selection.md`) | the earlier "reversal" was a **0.12 s artifact**: at a **2 s** hold the center grasp tips out for **both** bodies, so both prefer the CoM-ward grasp — **no reversal**; a trivial CoM baseline holds for both (no task advantage shown yet). Methodology now: multi-horizon holds + failure modes + baselines |
+| 14 | `command_calibration.py` | **Tier‑2 step (2)** — command→contact calibration | delivered force is analytically predictable (`2·clip(kp·(target−x_contact),0,F_limit)`, held-out **R²=0.998, ~1% err**); the **force-cap proxy is badly wrong** (R²=−20, ~2.5× over-state); a learned correction adds nothing → **analytical wins** for command→force |
 
 **Why this order.** We validated the *load-bearing identity* (P1) before anything built on
 it; got *one* embodiment fully working and visually verified (rendered filmstrips) before
