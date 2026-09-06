@@ -83,14 +83,22 @@ Closest prior work to beat: GraspGen-X (2606.00998, geometry-conditioned), Neary
 compositional bound — NOTE README had the wrong id 2412.11215, now fixed), Knuth (2010.08993,
 Lipschitz-gated planning). First build proposed: a MuJoCo ranking-reversal micro-benchmark reusing
 `graspability.py` + `cross_embodiment_v2` port split.
-**Tier-2 first slice BUILT (2026-09).** `grasp_ranking_reversal.py`: off-center-CoM bar, candidate
-grasps, two gripper embodiments (strong vs weak grip force = a real capability). MuJoCo-ground-truth
-best grasp REVERSES (strong→geometric center y=0; weak→toward CoM y=0.02, since y=0 tips out of its
-weaker grip). Capability-aware PC-CGS (one geometric finger-lever fit on pooled GT + each body's grip
-force) predicts BOTH argmaxes (2/2), reproduces the feasibility map 9/10, and NAMES the reason (moment
-margin); geometry-only ranker picks y=0 for both → wrong for the weak body. Fig+log:
-`outputs/rankrev_reversal.{png,txt}`. **v1 scope (honest):** force/moment axis only; two bodies share
-gripper morphology, differ in rated grip force (same port/reach); deliverable force = rated `2×squeeze`
-(not the measured port); lumped 1-param moment model (not the full `(W+R)` solve). **v2:** reach/
-manipulability with the real Panda (genuinely different port), camera-only refusal (observability),
-bimanual hand-participation.
+**Tier-2 first slice BUILT then CORRECTED (2026-09, 3rd review).** `grasp_ranking_reversal.py` first
+claimed a "certified ranking reversal" (strong→center grasp, weak→CoM-ward) — but that used a 0.12s
+hold. Reproduced the reviewer's finding: at a 2s hold the center grasp slowly TIPS OUT for BOTH bodies,
+so both prefer the CoM-ward grasp — THE REVERSAL DISAPPEARS. At 2s the feasible sets are IDENTICAL; the
+capability gap survives only as a transient tilt margin; a trivial CoM baseline holds for both (no task
+advantage shown). Benchmark rewritten: multi-horizon holds (0.12/0.5/2s), TIP vs DROP failure modes,
+CoM baseline; the moment-rule lever is flagged fit-in-sample (not zero-shot). Also fixed in
+`deleak_train_eval.py`: mean-baseline scored R² on float-mean but rel-err on panda-test-mean (now one
+predictor); MLP rel-err was seed-0 while R² was seed-averaged (now both averaged); "C coupled solve"
+renamed "compliance+port regression" (it is a regression, not a solve). Qualitative deleak story
+(compliance R²=0.72 but rel-err ~55%; port hurts; abs-F fails) unchanged. **Conceptual corrections
+folded into `docs/tier2_grasp_selection.md`:** (i) capability-aware grasp selection is NOT novel
+(Chen IROS'18 1710.11190; King RSS'13 pregrasp) — the measurable opportunity is a LEARNED model with a
+data-efficiency advantage over calibrated baselines; (ii) the Delassus port W is RESPONSE, not the
+feasible-wrench CAPABILITY set 𝒦_E(g) — don't conflate; (iii) a fitted margin is not a "certificate"
+without a tested error bound. **Next milestone (reviewer):** a frozen, INDEPENDENTLY-calibrated
+selector predicting SUSTAINED outcomes on held-out cases that BEATS the CoM + wrench-feasibility
+baselines; prioritize force-realization, sustained outcomes, independent eval over more NN/humanoid
+scope. Reviewer priority tests 1-8 in the doc.

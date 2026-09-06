@@ -1,23 +1,38 @@
-==========================================================================================
-GRASP-RANKING REVERSAL micro-benchmark (Contribution C, force/moment-capability axis)
-==========================================================================================
-off-center bar: CoM_y=0.045 (geom center y=0)  mass=0.20 kg  weight=1.96 N
-candidate grasps y: [-0.02, 0.0, 0.02, 0.045, 0.06]
+==============================================================================================
+SUSTAINED-HOLD grasp evaluation (Tier-2, audit-corrected: the 0.12s 'reversal' was an artifact)
+==============================================================================================
+off-center bar: CoM_y=0.045 (geom center y=0)  mass=0.20 kg  weight=1.96 N  hold horizon=2.0s  tilt-fail=25°
 
- ground-truth HOLD map (MuJoCo):
-   gripperA (strong 25N)    y=-0.020:.  y=+0.000:H  y=+0.020:H  y=+0.045:H  y=+0.060:H
-   gripperB (weak 2.5N)     y=-0.020:.  y=+0.000:.  y=+0.020:H  y=+0.045:H  y=+0.060:H
- deliverable grip (2x squeeze): {'gripperA (strong 25N)': 50.0, 'gripperB (weak 2.5N)': 5.0}
- fitted finger lever = 0.010 m (ONE constant, pooled; geometric ref 0.020)  feasibility errors=1/10
+ tilt(deg) vs hold horizon — the center grasp (y=0) SLOWLY tips out (artifact of a short hold):
+  body                   grasp      t@0.12s  t@0.50s  t@2.00s
+  gripperA (strong 25N)  y=0.000       6.2    10.2    25.4   [2.0s: FAIL TIP]
+  gripperA (strong 25N)  y=0.020       2.0     4.2    13.4   [2.0s: HELD]
+  gripperA (strong 25N)  y=0.045       0.3     0.6     1.8   [2.0s: HELD]
+  gripperB (weak 2.5N)   y=0.000      38.6    41.2    57.8   [2.0s: FAIL TIP]
+  gripperB (weak 2.5N)   y=0.020       2.3     4.7    14.3   [2.0s: HELD]
+  gripperB (weak 2.5N)   y=0.045       0.2     0.6     1.8   [2.0s: HELD]
 
-  body                     geometry-pick  PC-CGS-pick    ground-truth-best
-  gripperA (strong 25N)    y=0.0          y=0.0          y=0.0         
-  gripperB (weak 2.5N)     y=0.0          y=0.02         y=0.02        
+ SUSTAINED (2.0s) HOLD map:
+   gripperA (strong 25N)  y=-0.020:.  y=+0.000:.  y=+0.020:H  y=+0.045:H  y=+0.060:H
+   gripperB (weak 2.5N)   y=-0.020:.  y=+0.000:.  y=+0.020:H  y=+0.045:H  y=+0.060:H
 
-  geometry-only picks match ground-truth-best on 1/2 bodies; same grasp for all bodies (y in ['0.0']) -> NO reversal
-  PC-CGS picks match ground-truth-best on 2/2 bodies; picks DIFFER across bodies (y in ['0.0', '0.02']) -> REVERSAL
-  reason weak body rejects the geometric-center grasp (y=0): binding margin = moment (moment margin=-0.039 N·m<0)
+  body                   argmax@0.12s     argmax@2.0s      CoM-baseline(y=0.045)
+  gripperA (strong 25N)  y=0.0            y=0.02           HELD
+  gripperB (weak 2.5N)   y=0.02           y=0.02           HELD
 
- VERDICT: CERTIFIED RANKING REVERSAL DEMONSTRATED — the capability-aware PC-CGS margin picks a DIFFERENT best grasp per embodiment (matching MuJoCo ground truth) and names the physical reason (moment margin), while a geometry-only ranker picks the same grasp for both and is wrong for the weaker body.
+ capability moment-margin rule: lever=0.010 m FIT IN-SAMPLE on the 2.0s labels (NOT zero-shot); feasibility-map agreement=8/10
+ 2s-feasible sets: strong=[0.02, 0.045, 0.06]  weak=[0.02, 0.045, 0.06] -> IDENTICAL (weak grip still holds the near-CoM grasps)
+   the only capability signal is the TRANSIENT tilt margin at the center grasp: weak 39° vs strong 6° @0.12s
+
+----------------------------------------------------------------------------------------------
+ VERDICT (audit-corrected):
+  * REVERSAL @0.12s (strong→y=0.0, weak→y=0.02) DISAPPEARS @2.0s (both→y=0.02): the center grasp is slowly
+    tipping for BOTH bodies and only survives ~0.12s. The earlier 'certified reversal' was this artifact.
+  * At 2.0s the two bodies have IDENTICAL feasible sets; the capability gap survives only as a transient tilt
+    margin, not a change in the sustained decision. NO genuine ranking reversal in this scene.
+  * A trivial CoM-baseline grasp holds for BOTH bodies -> NO task advantage shown over 'grasp the CoM'.
+  * NEXT (open): a scene where an off-CoM grasp is needed for a TASK reason (clearance / mounting), a
+    genuinely different embodiment (Panda reach/port, not a grip-force knob), and an INDEPENDENTLY
+    calibrated rule evaluated on held-out cases vs the CoM + wrench-feasibility baselines (docs §5).
 
  wrote rankrev_out/grasp_ranking_reversal.png

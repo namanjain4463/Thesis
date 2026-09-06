@@ -264,39 +264,44 @@ port carries the embodiment", not grasp selection. Using `W_nn` needs the real `
 
 ---
 
-## Tier-2 first slice: certified grasp-ranking reversal
+## Tier-2 first slice: sustained-hold grasp eval (audit-corrected — reversal was an artifact)
 
-First evidence for Contribution C (`mujoco/grasp_ranking_reversal.py`; proposal in
-`docs/tier2_grasp_selection.md`). Off-center-CoM bar; candidate grasps along it; two gripper
-embodiments differing in **rated grip force** (a real hardware capability). The MuJoCo-ground-truth
-best grasp **reverses**: the strong gripper holds the geometric-center grasp; the weak one tips out of
-it and must grasp toward the CoM. A capability-aware **PC-CGS** margin (one geometric finger-lever fit
-as a single constant on pooled ground truth + each body's grip force) predicts **both argmaxes
-(2/2)**, reproduces the feasibility map **9/10**, and **names the binding reason** (the *moment*
-margin). A **geometry-only** ranker picks the center for both and is **wrong for the weak body**.
-*Scope of v1:* isolates the force/moment axis (same gripper morphology, different grip force); reach/
-manipulability with the real Panda, camera-only refusal, and bimanual hand-participation are v2.
+`mujoco/grasp_ranking_reversal.py` (proposal in `docs/tier2_grasp_selection.md`). Off-center-CoM bar;
+candidate grasps along it; two gripper embodiments differing in rated grip force.
 
-![Certified grasp-ranking reversal (Tier-2 first slice)](rankrev_reversal.png)
+**A 3rd reviewer overturned the earlier headline, and this is confirmed here.** The earlier version
+claimed a "certified ranking reversal" (strong→center grasp, weak→CoM-ward) — but it used a **0.12 s**
+hold. At a properly specified **2 s** hold the center grasp is **slowly tipping for BOTH bodies** and
+crosses the tilt threshold, so **both** bodies prefer the CoM-ward grasp: **the reversal disappears.**
+At 2 s the two bodies have **identical** feasible sets (the weak grip still holds the near-CoM grasps);
+the capability gap survives only as a **transient tilt margin** (weak 39° vs strong 6° at the center
+grasp @0.12 s), not a change in the sustained decision. A trivial **CoM-baseline** grasp holds for
+**both** bodies → this scene shows **no task advantage** for a capability-aware ranker over "grasp the
+CoM." (Also: the moment-margin rule's one lever was fit **in-sample** on the ground-truth labels, so
+its map agreement is not zero-shot.)
+
+![Sustained-hold grasp eval (audit-corrected)](rankrev_reversal.png)
 
 ```text
- ground-truth HOLD map (MuJoCo):
-   gripperA (strong 25N)    y=-0.020:.  y=+0.000:H  y=+0.020:H  y=+0.045:H  y=+0.060:H
-   gripperB (weak 2.5N)     y=-0.020:.  y=+0.000:.  y=+0.020:H  y=+0.045:H  y=+0.060:H
- deliverable grip (2x squeeze): {strong: 50.0, weak: 5.0} N
- fitted finger lever = 0.010 m (ONE constant, pooled; geometric ref 0.020)  feasibility errors=1/10
+ tilt(deg) vs hold horizon — the center grasp (y=0) SLOWLY tips out:
+  body                   grasp       t@0.12s  t@0.50s  t@2.00s   2.0s
+  gripperA (strong 25N)  y=0.000        6.2    10.2     25.4     FAIL TIP
+  gripperA (strong 25N)  y=0.020        2.0     4.2     13.4     HELD
+  gripperB (weak 2.5N)   y=0.000       38.6    41.2     57.8     FAIL TIP
+  gripperB (weak 2.5N)   y=0.020        2.3     4.7     14.3     HELD
 
-  body                     geometry-pick  PC-CGS-pick    ground-truth-best
-  gripperA (strong 25N)    y=0.0          y=0.0          y=0.0
-  gripperB (weak 2.5N)     y=0.0          y=0.02         y=0.02
+ SUSTAINED (2.0s) HOLD map:
+   gripperA (strong 25N)  y=-0.020:.  y=+0.000:.  y=+0.020:H  y=+0.045:H  y=+0.060:H
+   gripperB (weak 2.5N)   y=-0.020:.  y=+0.000:.  y=+0.020:H  y=+0.045:H  y=+0.060:H
 
-  geometry-only matches GT-best 1/2 (same grasp for all bodies -> NO reversal)
-  PC-CGS matches GT-best 2/2 (picks DIFFER across bodies -> REVERSAL)
-  weak body rejects the geometric-center grasp (y=0): binding margin = MOMENT (-0.039 N·m<0)
+  body        argmax@0.12s   argmax@2.0s   CoM-baseline
+  strong 25N  y=0.0          y=0.02        HELD
+  weak 2.5N   y=0.02         y=0.02        HELD
 
- VERDICT: CERTIFIED RANKING REVERSAL DEMONSTRATED — capability-aware PC-CGS picks a different best
- grasp per embodiment (matching MuJoCo), names the physical reason (moment margin); geometry-only is
- wrong for the weaker body.
+ VERDICT: the 0.12s reversal was a SHORT-HOLD ARTIFACT; at 2s there is NO reversal (both prefer the
+ CoM-ward grasp), feasible sets are identical, and a CoM baseline solves it. Open: a scene needing an
+ off-CoM grasp for a TASK reason, a genuinely different embodiment (Panda reach/port), and an
+ INDEPENDENTLY calibrated rule vs the CoM + wrench-feasibility baselines.
 ```
 
 ---

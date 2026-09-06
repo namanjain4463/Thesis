@@ -198,28 +198,31 @@ def eval_all(F, Pa):
     print("  => absolute F_n differs by grip strategy, and the port feature W_nn barely overlaps (frozen use = extrapolation).")
     res = {}
     def mlp_scores(Xtr, ytr, Xte, seeds=(0, 1, 2)):
-        r2s, preds = [], []
+        # R2 AND rel-err averaged over the SAME seeds (was: R2 averaged, rel from seed0 only)
+        r2s, rels, preds = [], [], []
         for sd in seeds:
             m = train(Xtr, ytr, seed=sd); yh = predict(m, Xte)
-            r2s.append(r2(yte, yh)); preds.append(yh)
-        return np.mean(r2s), np.std(r2s), preds[0]
+            r2s.append(r2(yte, yh)); rels.append(relmed(yte, yh)); preds.append(yh)
+        return float(np.mean(r2s)), float(np.std(r2s)), float(np.median(rels)), preds[0]
     # A / B : frozen float-trained MLPs
     for tag, up in [("A local-only MLP", False), ("B factorized MLP (+port)", True)]:
         Xtr, ytr, _ = make_xy(Ftr, up); Xte, _, _ = make_xy(Pte, up)
-        m, sd, pred = mlp_scores(Xtr, ytr, Xte)
-        res[tag] = dict(r2=m, sd=sd, rel=relmed(yte, pred), pred=pred)
-    # D / C : white-box physics, frozen float-fit
-    for tag, up in [("D analytical (no port)", False), ("C coupled solve (+port)", True)]:
+        r2m, sd, relm, pred = mlp_scores(Xtr, ytr, Xte)
+        res[tag] = dict(r2=r2m, sd=sd, rel=relm, pred=pred)
+    # D / C : white-box physics, frozen float-fit.  NB: C is a linear REGRESSION of compliance
+    # on [material one-hot, W_nn], NOT a full coupled contact solve (renamed to avoid overclaim).
+    for tag, up in [("D analytical (no port)", False), ("C compliance+port regression", True)]:
         coef = whitebox_fit(Ftr, up); pred = whitebox_pred(coef, Pte, up)
         res[tag] = dict(r2=r2(yte, pred), sd=0.0, rel=relmed(yte, pred), pred=pred)
-    # references
-    res["mean baseline"] = dict(r2=r2(yte, np.full_like(yte, make_xy(Ftr, True)[1].mean())),
-                                sd=0.0, rel=relmed(yte, np.full_like(yte, yte.mean())), pred=None)
+    # references. Mean baseline: ONE predictor (float-train mean) for BOTH R2 and rel-err
+    # (was: float-train mean for R2 but panda-test mean for rel-err -> two different predictors).
+    mp = np.full_like(yte, float(make_xy(Ftr, True)[1].mean()))
+    res["mean baseline"] = dict(r2=r2(yte, mp), sd=0.0, rel=relmed(yte, mp), pred=None)
     Xr, yr, _ = make_xy(Ptr, True); Xte2, _, _ = make_xy(Pte, True)
-    m, sd, _ = mlp_scores(Xr, yr, Xte2)
-    res["retrain on Panda (ref)"] = dict(r2=m, sd=sd, rel=np.nan, pred=None)
+    r2m, sd, relm, _ = mlp_scores(Xr, yr, Xte2)
+    res["retrain on Panda (ref)"] = dict(r2=r2m, sd=sd, rel=relm, pred=None)
     order = ["mean baseline", "D analytical (no port)", "A local-only MLP",
-             "C coupled solve (+port)", "B factorized MLP (+port)", "retrain on Panda (ref)"]
+             "C compliance+port regression", "B factorized MLP (+port)", "retrain on Panda (ref)"]
     print("  %-28s %-16s  %-s" % ("model", "R2 (mean±sd)", "median rel-err"))
     for k in order:
         r = res[k]
@@ -239,7 +242,7 @@ def main():
     res, yte = eval_all(F, Pa)
 
     A = res["A local-only MLP"]["r2"]; B = res["B factorized MLP (+port)"]["r2"]
-    D = res["D analytical (no port)"]["r2"]; C = res["C coupled solve (+port)"]["r2"]
+    D = res["D analytical (no port)"]["r2"]; C = res["C compliance+port regression"]["r2"]
     ret = res["retrain on Panda (ref)"]["r2"]
     print("\n" + "-" * 74)
     print(" HEADLINE (held-out Panda, constitutive regime, matched objects, SYNCED logging):")
@@ -263,7 +266,7 @@ def main():
     FLOOR = -1.0
     order = [("mean", res["mean baseline"]["r2"], "#999"),
              ("A local MLP", A, "#c40"), ("B factorized\nMLP (+port)", B, "#e83"),
-             ("C coupled\n(+port)", C, "#8c8"), ("D analytical\n(no port)", D, "#2a8"),
+             ("C compliance+port\nregression", C, "#8c8"), ("D analytical\n(no port)", D, "#2a8"),
              ("retrain\n(ref)", ret, "#39a")]
     heights = [max(o[1], FLOOR) for o in order]
     ax[0].bar([o[0] for o in order], heights, color=[o[2] for o in order])

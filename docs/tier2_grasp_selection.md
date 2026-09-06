@@ -71,13 +71,28 @@ grippers by that geometry:
 
 ## 2. The convergent GAP
 
-Across all four clusters, three things are **absent**:
+> **CORRECTION (3rd review).** An earlier version of this section claimed "no method selects grasps
+> using measured physical capability, nor rejects configurations because of grip/actuator limits."
+> **That is false.** *Manipulation Planning under Changing External Forces* (Chen et al., **IROS 2018**,
+> `arXiv:1710.11190`) uses **measured** gripper force/torque limits + manipulator joint-torque limits
+> to check stability and plan unimanual↔bimanual regrasps; *Pregrasp Manipulation as Trajectory
+> Optimization* (King et al., **RSS 2013**) plans object reconfiguration when joint-torque limits
+> prevent a direct lift. So **capability-aware grasp selection is NOT a sufficient novelty claim.**
+> These are model-based planners with known parameters; the remaining, *measurable* opportunity is a
+> **learned** interaction model that improves cross-body grasp decisions with **less new-body data**
+> than strong **calibrated analytical + learned baselines** — a claim that must be *measured*, not
+> asserted (a name, a physics margin, or a ranking reversal do not establish it). The items below are
+> re-scoped accordingly.
 
-1. **No one conditions grasp selection on *measured physical capability*.** Every gripper-conditioned
-   method conditions on **geometry** (swept volume, URDF, morphology, occupancy, spherical
-   correspondence). None feed the arm's reach envelope + joint-torque/payload feasibility + the
-   **contact-space inverse-inertia (Delassus port)** — the physical "how hard can THIS body push at
-   THIS contact through its real mechanics/controller" — into *which grasp/hand is chosen*.
+Across the clusters, what remains genuinely under-served:
+
+1. **Learning the *uncertain* part of capability, not re-deriving the known part.** The capability-aware
+   planners above assume known force/torque limits and rigid mechanics. Gripper-conditioned learners
+   condition on **geometry** (swept volume, URDF, morphology). Neither *learns* the uncertain
+   interface/command-response behavior (compliance, slip onset, controller realization) that decides
+   whether a grasp stays feasible **during execution on a new body** — and shows a **data-efficiency**
+   advantage there. (Note: the Delassus port `W=JM⁻¹Jᵀ` is a **response** operator, *not* the capability
+   set — see the §3.1 correction.)
 2. **No transferable, embodiment-factored contact model drives selection.** Physics-based selectors
    (iTuP, force-closure) use a **single-embodiment** mechanics model retrained per robot. The
    structured-contact line (ContactNets, Neary–Topcu, Knuth) never does the `W = Y_object + Y_robot`
@@ -90,23 +105,38 @@ Across all four clusters, three things are **absent**:
 
 ## 3. Proposed Contribution C — **Port-Conditioned Certified Grasp Selection (PC‑CGS)**
 
-**One sentence.** *A single frozen interaction model that selects grasp location and hand
-participation by composing an embodiment-invariant learned contact law with each body's **recomputed
-analytical contact port** (Delassus) inside the real convex solve, and gates the choice with a
-two-source transfer certificate plus a sensing-observability test — so the grasp ranking **reverses
-correctly and for a certified physical reason** when the embodiment changes, refusing grasps that are
-infeasible or unobservable for that body, with **near-zero new-body grasp data.***
+**One sentence (corrected, measurable).** *A frozen interaction model that predicts **sustained**
+grasp outcomes across bodies by composing an embodiment-invariant learned contact law with each body's
+analytical response (port) inside the real solve, and that — evaluated on **held-out** embodiments and
+objects against the **CoM** and **calibrated wrench-feasibility** baselines — **improves grasp
+decisions with less new-body data** than those baselines, while abstaining only when a **calibrated
+error bound** cannot certify the task margin.* (Not claimed: that a ranking must reverse — preserving a
+ranking is equally valid; that `W` is capability — it is response, §3.1; that a fitted positive margin
+is a "certificate" — it needs a tested error bound, §7. The value is the **measured data-efficiency /
+held-out accuracy delta**, nothing else.)
 
-### 3.1 The load-bearing insight (and why our own Tier‑1 negative *motivates* it)
-The entire grasp-synthesis literature is missing a **capability** channel; it uses gripper geometry.
-Our validated result supplies exactly that channel physically: **the analytical port `Y_robot`
-(Delassus `W = Y_object + Y_robot`) is the missing measured-capability signal** — it encodes the
-body's force/inertia/controller response at a contact, is **computable from the robot model with no
-grasp data**, and is what *must be recomputed per embodiment* (Tier‑0/1). Tier‑1 also told us **how
-to use it**: as a fitted MLP feature the port *hurt* (non-overlapping distributions → extrapolation),
-while the frozen **local compliance transferred** (white-box `R²=0.72`). Conclusion — **put the port
-where physics puts it: inside the `(W+R)` solve, not as a learned input.** PC‑CGS does exactly that,
-and `2207.05060` (bad diff-sim contact gradients) independently backs this choice.
+### 3.1 Two distinct components — RESPONSE vs CAPABILITY (3rd-review correction)
+An earlier draft said "the analytical port `Y_robot` (Delassus `W=JM⁻¹Jᵀ`) *is* the missing
+measured-capability signal." **That conflates two different objects, and the corrected benchmark
+(§6) shows the difference concretely** — changing the actuator force limit changed the grasp outcome
+**without changing `M`, `J`, or `W` at a fixed configuration.** Keep them separate:
+
+| Component | Question it answers | Object |
+|---|---|---|
+| **Mechanical + controller RESPONSE** | what happens when a command / contact force is applied? | the port `W=JM⁻¹Jᵀ` (+ the closed-loop controller) |
+| **Feasible contact-wrench CAPABILITY** | which force/moment combinations can this body *sustain*? | `𝒦_E(g) = { G(g)f : f in the friction cone, required actuator/joint loads within limits, config/support constraints hold }` |
+
+A static task is feasible iff its balancing wrench lies in `𝒦_E(g)`; dynamic execution additionally
+needs a valid trajectory with achievable commands. `W` does **not** by itself bound deliverable force.
+So the corrected job for the **learned** model is narrow and testable: **improve predictions of the
+*uncertain* interface behavior and command response** (compliance, slip onset, controller realization)
+that decide whether a candidate stays feasible *during execution* — the part `𝒦_E` with known limits
+does not capture. Tier‑1 still guides *how* to use `W`: as a fitted feature it hurt (extrapolation);
+the frozen **local compliance transferred** (white-box `R²=0.72`, though **median rel-err ≈55%** — an
+aggregate fit, not accurate force control). Put `W` inside the real solve where it belongs, and only
+in cases involving **acceleration, changing contacts, controller response, or coupled motion** — not
+forced into a static selector to preserve the original thesis equation (`2207.05060`, `2103.15406`
+back structure over black-box; the review backs not overclaiming `W` as capability).
 
 ### 3.2 The model (three legs)
 For a candidate grasp `a = {contact patches, hand assignment, approach, closing, transport}` on
@@ -187,23 +217,27 @@ supplied physics* — the same three-way separation the 2nd reviewer demanded in
 - **No standardized benchmark** for capability-dependent ranking reversal across embodiments was found
   — we would define one (a contribution, but also a burden of proof: baselines must be strong).
 
-## 6. First concrete build — **DONE** (`mujoco/grasp_ranking_reversal.py`)
-A MuJoCo **grasp-ranking-reversal micro-benchmark** on the force/moment-capability axis. Off-center-CoM
-bar; candidate grasps along it; two embodiments = a strong vs a weak gripper (grip force is a real
-hardware capability). **Result:** the MuJoCo-ground-truth best grasp **reverses** — strong body →
-geometric-center grasp (y=0), weak body → a grasp toward the CoM (y=0.02) because y=0 tips out of its
-weaker grip. **PC‑CGS** (one geometric finger-lever fit as a single constant on the pooled ground
-truth + each body's rated grip force) predicts **both argmaxes correctly (2/2)**, reproduces the
-feasibility map **9/10**, and **names the binding reason** — the *moment* margin (−0.039 N·m for the
-weak body at y=0). A **geometry-only** ranker picks y=0 for both and is **wrong for the weak body**.
-Figure + log: `outputs/rankrev_reversal.{png,txt}`.
+## 6. First concrete build — built, then **corrected to a null result** (`mujoco/grasp_ranking_reversal.py`)
+A MuJoCo micro-benchmark on the force/moment axis: off-center-CoM bar, candidate grasps, a strong vs a
+weak gripper. The first version claimed a **certified ranking reversal** (strong→center grasp,
+weak→CoM-ward) using a **0.12 s** hold. **A 3rd reviewer overturned it and this is confirmed:** at a
+properly specified **2 s** hold the center grasp is slowly tipping for **both** bodies and fails, so
+**both** prefer the CoM-ward grasp — **the reversal disappears.** At 2 s the two bodies have
+**identical** feasible sets (the weak grip still holds the near-CoM grasps); the capability gap
+survives only as a **transient tilt margin**, not a change in the sustained decision. A trivial
+**CoM baseline** holds for both → **no task advantage** for the capability-aware ranker in this scene.
+The benchmark now reports multi-horizon holds (0.12/0.5/2 s), separated failure modes (TIP vs DROP),
+and the CoM baseline; the moment-rule lever is flagged as fit **in-sample** (not zero-shot). Figure +
+log: `outputs/rankrev_reversal.{png,txt}`.
 
-**Honest scope of v1:** the two bodies share the gripper morphology and differ in *rated grip force*
-(same port/reach) — this isolates the force/moment axis cleanly; deliverable force is the rated spec
-(`2×squeeze`), not the measured Delassus port; the moment model is a single lumped lever, not the full
-`(W+R)` solve. **Next (v2):** the *reach/manipulability* axis with the real **Panda** (a genuinely
-different port), the *observability/refusal* axis (camera-only → reject force-critical), and the
-*bimanual* hand-participation decision — each a distinct physical cause of reversal.
+**Lessons folded into the plan (from the 3rd review):** specify the task horizon and score *sustained*
+grasps; separate failure modes; add the CoM and calibrated-wrench-feasibility baselines and only claim
+value if the learned method *beats* them on held-out cases; calibrate parameters on *separate* objects
+and freeze before evaluation; and do not force a reversal — correctly *preserving* a ranking is a valid
+outcome. **Next:** a scene where an off-CoM grasp is required for a genuine *task* reason (destination
+clearance / mounting feature), a genuinely different embodiment (Panda **reach/port**, not a grip-force
+knob), and an **independently calibrated** rule evaluated against the CoM + wrench-feasibility
+baselines (priority tests in §5 of the review; see also the corrected §2–§3 below).
 
 ## 7. References (confidence-flagged)
 Grasp synthesis: GraspGen-X ≈2606.00998 · D(R,O) ✓2410.01702 · T(R,O) ≈2510.12724 · MachaGrasp

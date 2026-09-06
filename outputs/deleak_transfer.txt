@@ -23,12 +23,12 @@ DE-LEAKED LEARNED CROSS-EMBODIMENT TRANSFER  (C_theta: local law -> F_n)
   DIAGNOSTIC: median F_n float/panda = 6.3x (grip strategy);  panda W_nn inside float 5-95% band = 20%
   => absolute F_n differs by grip strategy, and the port feature W_nn barely overlaps (frozen use = extrapolation).
   model                        R2 (mean±sd)      median rel-err
-  mean baseline                -0.315 ± 0.000     0.54
+  mean baseline                -0.315 ± 0.000     2.80
   D analytical (no port)        0.718 ± 0.000     0.55
-  A local-only MLP             -60.507 ± 25.865     2.61
-  C coupled solve (+port)      -0.276 ± 0.000     0.75
-  B factorized MLP (+port)     -52.918 ± 11.696     2.56
-  retrain on Panda (ref)        0.395 ± 0.197       -
+  A local-only MLP             -60.507 ± 25.865     2.11
+  C compliance+port regression -0.276 ± 0.000     0.75
+  B factorized MLP (+port)     -52.918 ± 11.696     2.16
+  retrain on Panda (ref)        0.395 ± 0.197     0.61
 
 --------------------------------------------------------------------------
  HEADLINE (held-out Panda, constitutive regime, matched objects, SYNCED logging):
